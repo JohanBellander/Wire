@@ -27,6 +27,8 @@ def _categorize(key: str) -> str:
         return "first-run flags"
     if key.startswith(_LAST_FETCHED_KEY_PREFIX):
         return "fetch watermarks"
+    if key.startswith("readme:"):
+        return "readme caches"
     return "runtime flags"
 
 
@@ -53,14 +55,17 @@ def main() -> int:
         print("=== bot_state ===")
         if not bot_state_rows:
             print("  (empty)")
-        for category in ("runtime flags", "first-run flags", "fetch watermarks"):
+        for category in ("runtime flags", "first-run flags", "fetch watermarks", "readme caches"):
             rows = groups.get(category, [])
             if not rows:
                 continue
             print(f"\n  [{category}]")
             for row in rows:
-                print(f"    {row.key:42s} {_short_value(row.value)}")
-                # Updated-at is useful for spotting stale entries
+                # README cache values are too long to print; show the size instead.
+                if category == "readme caches":
+                    print(f"    {row.key:42s} {len(row.value)} chars")
+                else:
+                    print(f"    {row.key:42s} {_short_value(row.value)}")
                 print(f"    {'':42s}   updated_at={row.updated_at.isoformat()}")
 
         print("\n=== per-repo poll state ===")
