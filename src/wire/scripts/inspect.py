@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import desc, func, select
 
@@ -29,17 +29,25 @@ def _format_event_message(e: Event) -> str:
             msg = commits[0].get("message", "").splitlines()[0]
             extra = f" (+{len(commits) - 1} more)" if len(commits) > 1 else ""
             return f"{msg[:80]}{extra}"
+        return "(no commits)"
     if e.event_type == "PullRequestEvent":
         pr = raw.get("pull_request") or {}
-        title = (pr.get("title") or "")[:80]
-        return f"PR \"{title}\" merged={pr.get('merged')}"
+        title = (pr.get("title") or "(no title)")[:80]
+        return f"#{pr.get('number', '?')} \"{title}\" action={raw.get('action')} merged={pr.get('merged')}"
     if e.event_type == "ReleaseEvent":
         rel = raw.get("release") or {}
-        return f"Release {rel.get('tag_name', '')} \"{(rel.get('name') or '')[:60]}\""
+        return f"{rel.get('tag_name', '')} \"{(rel.get('name') or '')[:60]}\""
     if e.event_type == "IssuesEvent":
         issue = raw.get("issue") or {}
-        return f"Issue \"{(issue.get('title') or '')[:80]}\" {raw.get('action')}"
-    return e.event_type
+        return f"\"{(issue.get('title') or '')[:80]}\" action={raw.get('action')}"
+    if e.event_type == "CreateEvent":
+        return f"{raw.get('ref_type', '?')} \"{raw.get('ref', '?')}\""
+    if e.event_type == "DeleteEvent":
+        return f"{raw.get('ref_type', '?')} \"{raw.get('ref', '?')}\""
+    if e.event_type == "IssueCommentEvent":
+        issue = raw.get("issue") or {}
+        return f"comment on \"{(issue.get('title') or '')[:60]}\""
+    return ""
 
 
 def main() -> int:
@@ -52,7 +60,7 @@ def main() -> int:
 
     db_path = os.environ.get("WIRE_DB_PATH", "/data/wire.db")
     db_session.init(db_path)
-    cutoff = datetime.utcnow() - timedelta(hours=args.hours)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=args.hours)
 
     print(f"=== Wire activity, last {args.hours}h (since {cutoff.isoformat()} UTC) ===\n")
 

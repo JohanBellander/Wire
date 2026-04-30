@@ -10,11 +10,17 @@ Hard rules:
 - Reason must be ≤ 80 characters.
 
 Score guidance:
-  0.0–0.2  Boring: typos, version bumps that aren't releases, lockfile updates.
-  0.2–0.4  Routine: small refactors, internal tweaks.
+  0.0–0.2  Boring: typos, version bumps that aren't releases, lockfile updates,
+           branch/tag creates and deletes, merge-commit-only pushes.
+  0.2–0.4  Routine: small refactors, internal tweaks, dependency bumps.
   0.4–0.6  Maybe: feature work that's hard to summarize without more context.
   0.6–0.8  Promising: clear feature, fix, or design change worth a tweet.
-  0.8–1.0  Strong: releases, milestones, "I just shipped X" moments.
+  0.8–1.0  Strong: releases (ReleaseEvent), repository creates
+           (CreateEvent ref_type=repository), milestones, "I just shipped X" moments.
+
+CreateEvent/DeleteEvent: the ref_type field tells you what was created/deleted.
+  - ref_type=branch or ref_type=tag → almost always 0.0–0.2 (mechanical).
+  - ref_type=repository → 0.7–0.9 (you're starting a new project).
 
 Schema:
 {

@@ -61,6 +61,20 @@ def _summarize_event(event: Event) -> str:
         issue = raw.get("issue") or {}
         parts.append(f"action: {raw.get('action')}")
         parts.append(f"title: {issue.get('title', '')[:140]}")
+    elif event.event_type == "CreateEvent":
+        # ref_type ∈ {branch, tag, repository}; very different signal levels
+        parts.append(f"ref_type: {raw.get('ref_type')}")
+        parts.append(f"ref: {raw.get('ref')}")
+        if raw.get("description"):
+            parts.append(f"description: {raw.get('description', '')[:140]}")
+    elif event.event_type == "DeleteEvent":
+        parts.append(f"ref_type: {raw.get('ref_type')}")
+        parts.append(f"ref: {raw.get('ref')}")
+    elif event.event_type == "IssueCommentEvent":
+        issue = raw.get("issue") or {}
+        comment = raw.get("comment") or {}
+        parts.append(f"issue_title: {issue.get('title', '')[:120]}")
+        parts.append(f"comment: {comment.get('body', '')[:200]}")
     return "\n".join(parts)
 
 

@@ -112,6 +112,17 @@ def _format_event_line(e: Event) -> str:
     elif e.event_type == "IssuesEvent":
         issue = raw.get("issue") or {}
         bits.append(f'Issue "{(issue.get("title") or "")[:140]}" {raw.get("action")}')
+    elif e.event_type == "CreateEvent":
+        bits.append(f'Create {raw.get("ref_type")} "{raw.get("ref")}"')
+    elif e.event_type == "DeleteEvent":
+        bits.append(f'Delete {raw.get("ref_type")} "{raw.get("ref")}"')
+    elif e.event_type == "IssueCommentEvent":
+        issue = raw.get("issue") or {}
+        comment = raw.get("comment") or {}
+        bits.append(
+            f'Comment on "{(issue.get("title") or "")[:80]}": '
+            f'{(comment.get("body") or "")[:140]}'
+        )
     if e.triage_reason:
         bits.append(f'reason="{e.triage_reason}"')
     return " ".join(bits)
