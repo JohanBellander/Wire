@@ -21,7 +21,7 @@ import jwt
 import structlog
 from tenacity import (
     AsyncRetrying,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -52,6 +52,20 @@ class _CachedToken:
 
 class GitHubAuthError(Exception):
     pass
+
+
+def _is_retriable_github_error(exc: BaseException) -> bool:
+    """Decide whether to retry a failed GitHub HTTP call.
+
+    Retry on transport-level failures and on 5xx server errors (transient).
+    Do NOT retry on 4xx (auth, bad request, rate-limited, pagination cap),
+    on GitHubAuthError (configuration), or on anything else.
+    """
+    if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return 500 <= exc.response.status_code < 600
+    return False
 
 
 class GitHubClient:
@@ -150,7 +164,7 @@ class GitHubClient:
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=1, min=1, max=8),
-            retry=retry_if_exception_type((httpx.TransportError, httpx.TimeoutException)),
+            retry=retry_if_exception(_is_retriable_github_error),
             reraise=True,
         ):
             with attempt:
@@ -159,7 +173,7 @@ class GitHubClient:
                 if resp.status_code in (401, 403):
                     raise GitHubAuthError(f"GitHub auth failed at {url}: {resp.status_code} {resp.text[:200]}")
                 if 500 <= resp.status_code < 600:
-                    # raise so tenacity retries; but TransportError isn't a status
+                    # Raise HTTPStatusError so tenacity sees a 5xx and retries.
                     resp.raise_for_status()
                 return resp
         raise RuntimeError("unreachable")

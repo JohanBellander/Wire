@@ -107,3 +107,67 @@ async def test_list_events_stops_on_404(gh_client, respx_mock):
     finally:
         await gh_client.aclose()
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_5xx_is_retried(gh_client, respx_mock, monkeypatch):
+    """500/502/503 from GitHub should be retried; transient blips shouldn't
+    abandon the whole repo's poll."""
+    _stub_installation_token(gh_client)
+    # Make tenacity's exponential wait near-instant in tests.
+    monkeypatch.setattr(
+        "wire.ingestion.github_client.wait_exponential",
+        lambda **kw: __import__("tenacity").wait_fixed(0),
+    )
+
+    page1 = [{"id": "1", "type": "PushEvent", "actor": {"login": "x"},
+              "created_at": "2026-04-30T10:00:00Z", "payload": {}}]
+
+    route = respx_mock.get("https://api.github.com/repos/testorg/myrepo/events")
+    route.mock(side_effect=[
+        httpx.Response(500, text="internal error"),  # first attempt fails
+        httpx.Response(502, text="bad gateway"),      # second attempt fails
+        httpx.Response(200, json=page1),              # third attempt succeeds
+    ])
+
+    try:
+        events = await gh_client.list_events("myrepo")
+    finally:
+        await gh_client.aclose()
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_5xx_eventually_gives_up_after_retries(gh_client, respx_mock, monkeypatch):
+    _stub_installation_token(gh_client)
+    monkeypatch.setattr(
+        "wire.ingestion.github_client.wait_exponential",
+        lambda **kw: __import__("tenacity").wait_fixed(0),
+    )
+
+    respx_mock.get("https://api.github.com/repos/testorg/myrepo/events").mock(
+        return_value=httpx.Response(503, text="service unavailable")
+    )
+
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await gh_client.list_events("myrepo")
+    finally:
+        await gh_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_404_is_not_retried(gh_client, respx_mock):
+    """404 means the repo is gone or wrong — don't retry."""
+    _stub_installation_token(gh_client)
+    route = respx_mock.get("https://api.github.com/repos/testorg/myrepo/events")
+    route.mock(return_value=httpx.Response(404, text="not found"))
+
+    try:
+        events = await gh_client.list_events("myrepo")
+    finally:
+        await gh_client.aclose()
+    # 404 returns empty list cleanly, not after retries
+    assert events == []
+    # Only one call made, not 3
+    assert route.call_count == 1
