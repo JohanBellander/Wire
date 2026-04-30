@@ -11,7 +11,7 @@ license = { text = "Apache-2.0" }
 dependencies = [
     "python-telegram-bot[ext]>=21,<22",
     "anthropic>=0.40",
-    "httpx>=0.27",
+    "httpx>=0.28.1",
     "gidgethub>=5.3",
     "apscheduler>=3.10,<4",
     "sqlalchemy>=2.0",
