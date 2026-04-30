@@ -233,6 +233,17 @@ class GitHubClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def compare_commits(self, repo: str, base: str, head: str) -> list[dict] | None:
+        """Return the commits between two SHAs (newest last) via the compare API.
+        Used to enrich PushEvent payloads, which the /events endpoint strips of
+        commit details. Returns None on 404/422 (no comparable range / new repo)."""
+        url = f"{GITHUB_API}/repos/{self.org}/{repo}/compare/{base}...{head}"
+        resp = await self._get(url)
+        if resp.status_code in (404, 422):
+            return None
+        resp.raise_for_status()
+        return resp.json().get("commits", [])
+
     async def list_releases(self, repo: str, *, since: datetime | None = None) -> list[dict]:
         url = f"{GITHUB_API}/repos/{self.org}/{repo}/releases"
         resp = await self._get(url, params={"per_page": 30})

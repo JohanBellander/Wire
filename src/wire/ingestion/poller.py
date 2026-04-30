@@ -68,6 +68,64 @@ def _mark_first_run_done(repo: str) -> None:
             s.add(BotState(key=key, value=utc_now().isoformat()))
 
 
+_NULL_SHA = "0000000000000000000000000000000000000000"
+
+
+async def _enrich_events(client: GitHubClient, repo: str, raw_events: list[dict]) -> list[dict]:
+    """Backfill the bits of payload that GitHub's /events endpoint strips.
+
+    PushEvent          → fetch commits via /compare/{before}...{head}
+    PullRequestEvent   → fetch full PR via /pulls/{n}
+
+    A failure on any single enrichment is logged and the event passes through
+    with its stripped payload — partial info beats abandoning the poll.
+    """
+    pr_cache: dict[int, dict] = {}
+
+    for r in raw_events:
+        et = r.get("type")
+        payload = r.get("payload") or {}
+
+        if et == "PushEvent":
+            before = payload.get("before")
+            head = payload.get("head")
+            if before and head and before != _NULL_SHA:
+                try:
+                    commits = await client.compare_commits(repo, before, head)
+                except Exception as e:
+                    log.warning("wire.enrich.push_failed", repo=repo, error=str(e))
+                    commits = None
+                if commits is not None:
+                    payload["commits"] = [
+                        {
+                            "sha": c.get("sha"),
+                            "message": (c.get("commit") or {}).get("message", ""),
+                            "author": ((c.get("commit") or {}).get("author") or {}).get("name"),
+                        }
+                        for c in commits
+                    ]
+
+        elif et == "PullRequestEvent":
+            pr = payload.get("pull_request") or {}
+            number = pr.get("number")
+            if number is not None:
+                full_pr = pr_cache.get(number)
+                if full_pr is None:
+                    try:
+                        full_pr = await client.get_pull_request(repo, int(number))
+                    except Exception as e:
+                        log.warning(
+                            "wire.enrich.pr_failed", repo=repo, number=number, error=str(e),
+                        )
+                        full_pr = None
+                    if full_pr is not None:
+                        pr_cache[number] = full_pr
+                if full_pr is not None:
+                    payload["pull_request"] = full_pr
+
+    return raw_events
+
+
 async def ingest_repo(
     client: GitHubClient,
     repo: str,
@@ -76,11 +134,14 @@ async def ingest_repo(
 ) -> IngestStats:
     log_ = log.bind(repo=repo)
     last_at = _last_event_at_for(repo)
-    first_run = last_at is None
+    # Use the persisted bot_state flag instead of "is the events table empty
+    # for this repo?" — the latter mis-classified quiet repos as first_run forever.
+    first_run = _is_first_run_for(repo)
     log_.info("wire.ingestion.start", first_run=first_run, since=str(last_at))
 
     default_branch = await client.get_default_branch(repo)
     raw = await client.list_events(repo, since=last_at)
+    raw = await _enrich_events(client, repo, raw)
 
     normalized: list[NormalizedEvent] = []
     for r in raw:

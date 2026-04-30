@@ -157,6 +157,38 @@ async def test_5xx_eventually_gives_up_after_retries(gh_client, respx_mock, monk
 
 
 @pytest.mark.asyncio
+async def test_compare_commits_returns_commit_array(gh_client, respx_mock):
+    _stub_installation_token(gh_client)
+    respx_mock.get(
+        "https://api.github.com/repos/testorg/myrepo/compare/aaa...bbb"
+    ).mock(return_value=httpx.Response(200, json={
+        "commits": [
+            {"sha": "abc1", "commit": {"message": "feat: add x", "author": {"name": "j"}}},
+            {"sha": "def2", "commit": {"message": "fix: y", "author": {"name": "j"}}},
+        ]
+    }))
+    try:
+        commits = await gh_client.compare_commits("myrepo", "aaa", "bbb")
+    finally:
+        await gh_client.aclose()
+    assert commits is not None and len(commits) == 2
+    assert commits[0]["commit"]["message"] == "feat: add x"
+
+
+@pytest.mark.asyncio
+async def test_compare_commits_returns_none_on_404(gh_client, respx_mock):
+    _stub_installation_token(gh_client)
+    respx_mock.get(
+        "https://api.github.com/repos/testorg/myrepo/compare/aaa...bbb"
+    ).mock(return_value=httpx.Response(404, text="not found"))
+    try:
+        commits = await gh_client.compare_commits("myrepo", "aaa", "bbb")
+    finally:
+        await gh_client.aclose()
+    assert commits is None
+
+
+@pytest.mark.asyncio
 async def test_404_is_not_retried(gh_client, respx_mock):
     """404 means the repo is gone or wrong — don't retry."""
     _stub_installation_token(gh_client)
