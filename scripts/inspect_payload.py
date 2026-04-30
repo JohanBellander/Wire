@@ -1,15 +1,15 @@
 """Inspect what's actually stored in the events table for PR / Create / Push
-events. Diagnoses the "empty PR title" issue.
+events. Diagnoses payload-shape issues like missing PR titles.
 
 Run inside the Wire container:
 
-    docker exec $(docker ps --filter name=wire --format '{{.Names}}' | head -1) \
-        python /tmp/inspect_payload.py
+    CID=$(docker ps --filter name=j13i32n8rrvzsxpydl404f6v -q)
+    docker exec "$CID" python /tmp/inspect_payload.py
 
-Or pipe straight in via SSH (no copy step):
+Or pipe straight in via SSH (no file-copy step):
 
     cat scripts/inspect_payload.py | ssh johan@gary \
-        'docker exec -i $(docker ps --filter name=wire --format "{{.Names}}" | head -1) python /dev/stdin'
+        "docker exec -i \$(docker ps -q -f name=j13i32n8rrvzsxpydl404f6v) python /dev/stdin"
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _show_event(eid: int, ghid: str, et: str, pl: object) -> None:
         print(f"  pr present       : {bool(pr)}")
         print(f"  pr keys          : {sorted(pr.keys())[:25]}")
         print(f"  pr.title         : {_peek(pr, 'title')}")
-        print(f"  pr.body length   : {len((pr.get('body') or ''))}")
+        print(f"  pr.body length   : {len(pr.get('body') or '')}")
         print(f"  pr.merged        : {_peek(pr, 'merged')}")
         print(f"  pr.state         : {_peek(pr, 'state')}")
         print(f"  pr.number        : {_peek(pr, 'number')}")
@@ -64,7 +64,7 @@ def _show_event(eid: int, ghid: str, et: str, pl: object) -> None:
         print(f"  raw.ref          : {_peek(raw, 'ref')}")
         print(f"  commits count    : {len(commits)}")
         for c in commits[:3]:
-            print(f"    - {c.get('message','').splitlines()[0][:80]}")
+            print(f"    - {c.get('message', '').splitlines()[0][:80]}")
     print()
 
 
