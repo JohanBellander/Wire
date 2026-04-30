@@ -16,9 +16,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as SASession
+
+if TYPE_CHECKING:
+    from wire.llm.provider import LLMResponse
 
 # Rate table: USD per 1M tokens.
 # Keys are the model strings used in config.yaml (claude.* fields).
@@ -169,3 +173,23 @@ def record_extension(
             reason=reason,
         )
     )
+
+
+def log_llm_call(resp: "LLMResponse") -> None:
+    """Persist one LLMCall row from a provider response. Shared by triage,
+    drafting, voice profile, and digest paths so cost tracking captures
+    every model call."""
+    from wire.db import session as db_session
+    from wire.db.models import LLMCall
+
+    with db_session.session_scope() as sa:
+        sa.add(LLMCall(
+            task=resp.task,
+            provider=resp.provider,
+            model=resp.model,
+            fallback=resp.fallback_used,
+            input_tokens=resp.input_tokens,
+            output_tokens=resp.output_tokens,
+            cost_usd=resp.cost_usd,
+            latency_ms=resp.latency_ms,
+        ))

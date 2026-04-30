@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from wire.db import session as db_session
-from wire.db.models import Event, LLMCall
+from wire.db.models import Event
+from wire.llm.budget import log_llm_call
 from wire.llm.provider import LLMError, LLMProvider, parse_json_lenient
 
 log = structlog.get_logger()
@@ -95,6 +96,7 @@ async def triage_event(event: Event, provider: LLMProvider) -> TriageResult:
         response_format=TriageResponse,
         max_tokens=120,
     )
+    log_llm_call(resp)
     parsed = TriageResponse.model_validate(parse_json_lenient(resp.content))
     return TriageResult(
         event_id=event.id,
@@ -134,26 +136,5 @@ async def triage_pending_events(provider: LLMProvider) -> int:
     return scored
 
 
-def log_llm_call(
-    *,
-    task: str,
-    provider: str,
-    model: str | None,
-    fallback: bool,
-    input_tokens: int | None,
-    output_tokens: int | None,
-    cost_usd: float | None,
-    latency_ms: int | None,
-) -> None:
-    """Write one row to llm_calls. Used by every caller of provider.complete()."""
-    with db_session.session_scope() as sa:
-        sa.add(LLMCall(
-            task=task,
-            provider=provider,
-            model=model,
-            fallback=fallback,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=cost_usd,
-            latency_ms=latency_ms,
-        ))
+# log_llm_call moved to wire.llm.budget — one shared implementation now serves
+# triage, drafting, voice profile, and digest.

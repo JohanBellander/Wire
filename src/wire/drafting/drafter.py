@@ -31,7 +31,6 @@ from wire.db.models import (
     Decision,
     Draft,
     Event,
-    LLMCall,
     Metric,
     Post,
     Session,
@@ -39,6 +38,7 @@ from wire.db.models import (
     utc_now,
 )
 from wire.llm.alerts import is_drafting_blocked_by_budget
+from wire.llm.budget import log_llm_call as _log_llm_call
 from wire.llm.caching import text_block
 from wire.llm.provider import LLMError, LLMProvider, LLMResponse, parse_json_lenient
 
@@ -312,20 +312,6 @@ def _all_events_below_threshold(session_id: int, threshold: float) -> bool:
         if not events:
             return True
         return all((e.triage_score or 0.0) < threshold for e in events)
-
-
-def _log_llm_call(resp: LLMResponse) -> None:
-    with db_session.session_scope() as sa:
-        sa.add(LLMCall(
-            task=resp.task,
-            provider=resp.provider,
-            model=resp.model,
-            fallback=resp.fallback_used,
-            input_tokens=resp.input_tokens,
-            output_tokens=resp.output_tokens,
-            cost_usd=resp.cost_usd,
-            latency_ms=resp.latency_ms,
-        ))
 
 
 # --- main entrypoint ---------------------------------------------------------

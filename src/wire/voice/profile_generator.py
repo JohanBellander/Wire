@@ -18,7 +18,8 @@ from sqlalchemy import desc, select
 
 from wire.config import WireConfig
 from wire.db import session as db_session
-from wire.db.models import LLMCall, Post, VoiceProfile, utc_now
+from wire.db.models import Post, VoiceProfile, utc_now
+from wire.llm.budget import log_llm_call
 from wire.llm.provider import LLMError, LLMProvider, LLMResponse, parse_json_lenient
 
 log = structlog.get_logger()
@@ -40,16 +41,6 @@ def _gather_recent_posts(limit: int) -> list[str]:
             select(Post).order_by(desc(Post.posted_at)).limit(limit)
         ).scalars().all()
     return [p.text for p in rows]
-
-
-def _log_call(resp: LLMResponse) -> None:
-    with db_session.session_scope() as sa:
-        sa.add(LLMCall(
-            task=resp.task, provider=resp.provider, model=resp.model,
-            fallback=resp.fallback_used,
-            input_tokens=resp.input_tokens, output_tokens=resp.output_tokens,
-            cost_usd=resp.cost_usd, latency_ms=resp.latency_ms,
-        ))
 
 
 async def regenerate_voice_profile(
@@ -76,7 +67,7 @@ async def regenerate_voice_profile(
         log.warning("wire.voice.llm_failed", error=str(e))
         return None
 
-    _log_call(resp)
+    log_llm_call(resp)
     parsed = _VoiceResponse.model_validate(parse_json_lenient(resp.content))
     with db_session.session_scope() as sa:
         sa.add(VoiceProfile(profile_text=parsed.profile_text))
