@@ -209,6 +209,26 @@ class _Jobs:
         except Exception:
             log.exception("wire.expire.failed")
 
+    async def run_readme_refresh(self) -> None:
+        """Weekly: refresh per-repo README cache for the drafting prompt's
+        'About this repo' block."""
+        from wire.ingestion.github_client import GitHubClient
+        from wire.ingestion.readme_fetcher import refresh_all_readmes
+
+        client = GitHubClient.from_files(
+            app_id=self.cfg.github.app_id,
+            installation_id=self.cfg.github.installation_id,
+            private_key_path=self.cfg.github.private_key_path,
+            org=self.cfg.github.org,
+        )
+        try:
+            n = await refresh_all_readmes(client, self.repos)
+            log.info("wire.readme.refresh_done", refreshed=n)
+        except Exception:
+            log.exception("wire.readme.refresh_failed")
+        finally:
+            await client.aclose()
+
 
 # ---------------- run --------------------------------------------------------
 
@@ -312,6 +332,15 @@ async def run() -> None:
         jobs.run_voice,
         CronTrigger(day_of_week="sun", hour=4, minute=0, timezone=str(config.quiet_hours.timezone)),
         id="voice",
+    )
+    # README refresh: weekly, Sunday 03:30 local. 30 min before voice so both
+    # are warm by the first Monday digest.
+    sched.add_job(
+        jobs.run_readme_refresh,
+        CronTrigger(
+            day_of_week="sun", hour=3, minute=30, timezone=str(config.quiet_hours.timezone)
+        ),
+        id="readme",
     )
     sched.add_job(jobs.run_expire_saved, IntervalTrigger(hours=1), id="expire_saved")
     sched.start()

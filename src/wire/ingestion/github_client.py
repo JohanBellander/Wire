@@ -248,6 +248,26 @@ class GitHubClient:
         resp.raise_for_status()
         return resp.json().get("commits", [])
 
+    async def get_readme(self, repo: str) -> str | None:
+        """Return the repo's README as plain text. Decodes base64 if GitHub
+        sends it that way. Returns None on 404 (no README in the repo)."""
+        import base64
+
+        url = f"{GITHUB_API}/repos/{self.org}/{repo}/readme"
+        resp = await self._get(url)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("content", "")
+        if data.get("encoding") == "base64":
+            try:
+                return base64.b64decode(content).decode("utf-8", errors="replace")
+            except (ValueError, UnicodeDecodeError) as e:
+                log.warning("wire.readme.decode_failed", repo=repo, error=str(e))
+                return None
+        return content or None
+
     async def list_releases(self, repo: str, *, since: datetime | None = None) -> list[dict]:
         url = f"{GITHUB_API}/repos/{self.org}/{repo}/releases"
         resp = await self._get(url, params={"per_page": 30})

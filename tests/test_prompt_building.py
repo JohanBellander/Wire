@@ -370,6 +370,94 @@ def test_voice_profile_fallback_when_none(db):
     assert "no voice profile yet" in sys_text
 
 
+def test_prompt_includes_readme_when_cached(db):
+    """A cached README for the session's repo lands as its own 1h-cached block."""
+    from wire.db.models import BotState
+
+    cfg = _config()
+    repos = _repos()
+    with db.session_scope() as sa:
+        sa.add(
+            BotState(
+                key="readme:winetrackr",
+                value=(
+                    "# winetrackr\n\nA wine cellar tracker for tracking which "
+                    "vintages I have and when they should be drunk."
+                ),
+            )
+        )
+        sess = Session(
+            repo="winetrackr",
+            started_at=utc_now(),
+            ended_at=utc_now(),
+            closed_reason="idle",
+        )
+        sa.add(sess)
+        sa.flush()
+        sa.add(
+            Event(
+                github_id="ev1",
+                repo="winetrackr",
+                event_type="PushEvent",
+                payload={"raw_payload": {}},
+                occurred_at=utc_now(),
+                session_id=sess.id,
+                triage_score=0.7,
+            )
+        )
+        sid = sess.id
+    with db.session_scope() as sa:
+        s = sa.get(Session, sid)
+        _ = list(s.events)
+        sa.expunge_all()
+
+    blocks = build_prompt_blocks(s, cfg, repos)
+    # Three system blocks now: system+voice, about-this-repo, learning
+    assert len(blocks.system_blocks) == 3
+    sys_text = "\n".join(b["text"] for b in blocks.system_blocks)
+    assert "About winetrackr" in sys_text
+    assert "wine cellar tracker" in sys_text
+    # README block has 1h cache (same as system+voice)
+    repo_block = blocks.system_blocks[1]
+    assert repo_block["cache_control"].get("ttl") == "1h"
+
+
+def test_prompt_omits_readme_block_when_not_cached(db):
+    """No cache entry → no README block; back to the original 2-block shape."""
+    cfg = _config()
+    repos = _repos()
+    with db.session_scope() as sa:
+        sess = Session(
+            repo="winetrackr",
+            started_at=utc_now(),
+            ended_at=utc_now(),
+            closed_reason="idle",
+        )
+        sa.add(sess)
+        sa.flush()
+        sa.add(
+            Event(
+                github_id="ev1",
+                repo="winetrackr",
+                event_type="PushEvent",
+                payload={"raw_payload": {}},
+                occurred_at=utc_now(),
+                session_id=sess.id,
+                triage_score=0.7,
+            )
+        )
+        sid = sess.id
+    with db.session_scope() as sa:
+        s = sa.get(Session, sid)
+        _ = list(s.events)
+        sa.expunge_all()
+
+    blocks = build_prompt_blocks(s, cfg, repos)
+    assert len(blocks.system_blocks) == 2
+    sys_text = "\n".join(b["text"] for b in blocks.system_blocks)
+    assert "About winetrackr" not in sys_text
+
+
 # --- DraftResponse schema ----------------------------------------------------
 
 

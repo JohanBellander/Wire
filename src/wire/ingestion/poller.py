@@ -228,6 +228,15 @@ async def ingest_repo(
         max_ts = max(n.occurred_at for n in normalized)
         _set_last_fetched_at(repo, max_ts)
 
+    # Lazy: cache the README if we don't have one yet. Best-effort — never
+    # blocks the poll. Weekly cron handles refreshes.
+    try:
+        from wire.ingestion.readme_fetcher import ensure_readme_cached
+
+        await ensure_readme_cached(client, repo)
+    except Exception:
+        log.exception("wire.readme.ensure_failed", repo=repo)
+
     log_.info(
         "wire.ingestion.done",
         fetched=len(raw),

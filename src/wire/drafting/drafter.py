@@ -250,11 +250,14 @@ def build_prompt_blocks(
 ) -> PromptBlocks:
     """Assemble the cached + variable blocks for one drafting call.
 
-    Cache strategy (SPEC §8):
-      Block 1 (1h): system + voice profile
-      Block 2 (5m): recent posts + recent decisions + metric summary
-      Block 3 (variable, never cached): session events
+    Cache strategy (SPEC §8 + README extension):
+      Block 1 (1h):     system + voice profile (constant across sessions)
+      Block 2 (1h):     about this repo (cached README, varies per repo)
+      Block 3 (5m):     recent posts + decisions + metric summary
+      Block 4 (variable, never cached): session events
     """
+    from wire.ingestion.readme_fetcher import get_cached_readme
+
     repo_entry = repos_file.get(session.repo)
     repo_notes = repo_entry.notes if repo_entry else ""
     repo_visibility = repo_entry.visibility if repo_entry else "?"
@@ -269,6 +272,16 @@ def build_prompt_blocks(
 
     system_text = _system_prompt() + "\n\nVoice profile:\n" + voice
 
+    readme = get_cached_readme(session.repo)
+    repo_block_text: str | None = None
+    if readme:
+        repo_block_text = (
+            f"─── About {session.repo} ───\n"
+            "(Auto-extracted from the repo's README, for context. Use it to "
+            "understand what the project does; do not quote it verbatim.)\n\n"
+            f"{readme}"
+        )
+
     learning_text = "\n".join(
         [
             "─── Recent posts (last 30, settled ≥ 7d, with performance) ───",
@@ -282,10 +295,14 @@ def build_prompt_blocks(
     )
 
     cached_caching = config.llm.prompt_caching
-    system_blocks = [
-        text_block(system_text, cache_ttl="1h" if cached_caching else None),
-        text_block(learning_text, cache_ttl="5m" if cached_caching else None),
-    ]
+    system_blocks = [text_block(system_text, cache_ttl="1h" if cached_caching else None)]
+    if repo_block_text is not None:
+        # 1h cache — README rarely changes; cache hit for repeated drafts on
+        # the same repo within an hour.
+        system_blocks.append(
+            text_block(repo_block_text, cache_ttl="1h" if cached_caching else None)
+        )
+    system_blocks.append(text_block(learning_text, cache_ttl="5m" if cached_caching else None))
 
     user_message = _format_session_events(session, repo_notes, repo_visibility)
 
