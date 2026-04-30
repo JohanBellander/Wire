@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import structlog
 from sqlalchemy import func, select
@@ -50,6 +50,11 @@ def _existing_github_ids(repo: str) -> set[str]:
 
 
 _FIRST_RUN_KEY_PREFIX = "ingest_completed:"
+_LAST_FETCHED_KEY_PREFIX = "last_fetched_at:"
+# Defensive floor: if we somehow have no watermark and no events for a repo,
+# never fetch more than this much history. Prevents back-flood when the
+# first-run flag was set but the fetch high-water mark wasn't.
+_MISSING_WATERMARK_FLOOR_HOURS = 24
 
 
 def _is_first_run_for(repo: str) -> bool:
@@ -65,6 +70,52 @@ def _mark_first_run_done(repo: str) -> None:
     with db_session.session_scope() as s:
         if s.get(BotState, key) is None:
             s.add(BotState(key=key, value=utc_now().isoformat()))
+
+
+def _get_last_fetched_at(repo: str) -> datetime | None:
+    """Per-repo high-water mark for the GitHub /events fetch. Updated after
+    every successful poll regardless of whether anything survived the filter
+    chain — decouples 'what we've seen' from 'what's in the DB.'"""
+    with db_session.session_scope() as s:
+        row = s.get(BotState, _LAST_FETCHED_KEY_PREFIX + repo)
+        if row is None:
+            return None
+        try:
+            return datetime.fromisoformat(row.value)
+        except ValueError:
+            return None
+
+
+def _set_last_fetched_at(repo: str, ts: datetime) -> None:
+    key = _LAST_FETCHED_KEY_PREFIX + repo
+    iso = ts.isoformat()
+    with db_session.session_scope() as s:
+        row = s.get(BotState, key)
+        if row is None:
+            s.add(BotState(key=key, value=iso))
+        else:
+            row.value = iso
+            row.updated_at = utc_now()
+
+
+def _resolve_since(repo: str, *, first_run: bool) -> datetime | None:
+    """Decide what timestamp to pass to list_events for this repo.
+
+    First-run path: since=None — fetch what's available, the filter chain's
+        24h cutoff drops the backlog.
+    Subsequent polls: prefer the per-repo watermark, fall back to the events
+        table's max(occurred_at), and if both are missing apply a 24h floor
+        so a misconfigured / stale state can't flood the bot with old events.
+    """
+    if first_run:
+        return None
+    watermark = _get_last_fetched_at(repo)
+    if watermark is not None:
+        return watermark
+    fallback = _last_event_at_for(repo)
+    if fallback is not None:
+        return fallback
+    return utc_now() - timedelta(hours=_MISSING_WATERMARK_FLOOR_HOURS)
 
 
 _NULL_SHA = "0000000000000000000000000000000000000000"
@@ -135,14 +186,12 @@ async def ingest_repo(
     repos_file: ReposFile,
 ) -> IngestStats:
     log_ = log.bind(repo=repo)
-    last_at = _last_event_at_for(repo)
-    # Use the persisted bot_state flag instead of "is the events table empty
-    # for this repo?" — the latter mis-classified quiet repos as first_run forever.
     first_run = _is_first_run_for(repo)
-    log_.info("wire.ingestion.start", first_run=first_run, since=str(last_at))
+    since = _resolve_since(repo, first_run=first_run)
+    log_.info("wire.ingestion.start", first_run=first_run, since=str(since))
 
     default_branch = await client.get_default_branch(repo)
-    raw = await client.list_events(repo, since=last_at)
+    raw = await client.list_events(repo, since=since)
     raw = await _enrich_events(client, repo, raw)
 
     normalized: list[NormalizedEvent] = []
@@ -169,6 +218,15 @@ async def ingest_repo(
     # Whether or not anything was inserted, this poll completed — flip the
     # first-run flag so the next poll skips the 24h cutoff.
     _mark_first_run_done(repo)
+
+    # Advance the watermark to the most recent event we *fetched* (not just
+    # those that survived the filter chain). This decouples what-we've-seen
+    # from what's-in-the-DB, so a repo that has activity but nothing makes
+    # it through filters doesn't end up re-fetching the entire backlog on a
+    # later poll where the filter outcome changes.
+    if normalized:
+        max_ts = max(n.occurred_at for n in normalized)
+        _set_last_fetched_at(repo, max_ts)
 
     log_.info(
         "wire.ingestion.done",
