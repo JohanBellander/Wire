@@ -8,6 +8,12 @@ Hard rules:
 - Match the voice patterns shown in the examples — do not generic-ify.
 - Drafts must be ≤ 280 characters per tweet. Threads are allowed (a list of
   tweets) when the story warrants it, but most posts should be single tweets.
+- **Mention the repo name in the post text.** The user works on multiple
+  projects in public; readers benefit from knowing which one this is about.
+  Use the exact repo name from the "Repo:" line in the session header. Natural
+  phrasings like "shipped X in winetrackr", "winetrackr: just ...", or "spent
+  the morning fixing Y in helmsman" all work. Don't include the org name
+  unless disambiguation is genuinely needed.
 - If nothing in the session is genuinely post-worthy, return skip_reason
   and an empty drafts array. Most sessions should produce zero drafts.
 - Do NOT post about: secrets, credentials, work content, unfinished
