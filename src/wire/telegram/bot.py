@@ -10,14 +10,11 @@ are in `handlers.py`.
 from __future__ import annotations
 
 import os
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import structlog
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    Update,
 )
 from telegram.ext import (
     Application,
@@ -27,9 +24,9 @@ from telegram.ext import (
     filters,
 )
 
-from wire.config import RepoEntry, ReposFile, WireConfig
+from wire.config import ReposFile, WireConfig
 from wire.db import session as db_session
-from wire.db.models import Draft, Session, utc_now
+from wire.db.models import Draft, Session
 from wire.telegram import commands as cmds
 from wire.telegram import handlers as hnd
 
@@ -62,11 +59,7 @@ def build_application(
     *,
     twitter_poster=None,  # injected; type wire.twitter.client.TwitterClient
 ) -> Application:
-    app = (
-        Application.builder()
-        .token(_bot_token(cfg))
-        .build()
-    )
+    app = Application.builder().token(_bot_token(cfg)).build()
 
     # Stash shared deps on bot_data so handlers can reach them.
     app.bot_data["wire_config"] = cfg
@@ -99,28 +92,42 @@ def build_application(
 
 
 def _draft_keyboard(draft_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Post",   callback_data=f"approve:{draft_id}"),
-        InlineKeyboardButton("✏️ Edit",   callback_data=f"edit:{draft_id}"),
-        InlineKeyboardButton("❌ Reject", callback_data=f"reject:{draft_id}"),
-        InlineKeyboardButton("💤 Save",   callback_data=f"save:{draft_id}"),
-    ]])
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Post", callback_data=f"approve:{draft_id}"),
+                InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{draft_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{draft_id}"),
+                InlineKeyboardButton("💤 Save", callback_data=f"save:{draft_id}"),
+            ]
+        ]
+    )
 
 
 def reject_reason_keyboard(draft_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+    return InlineKeyboardMarkup(
         [
-            InlineKeyboardButton("Boring",          callback_data=f"reject_reason:{draft_id}:boring"),
-            InlineKeyboardButton("Wrong tone",      callback_data=f"reject_reason:{draft_id}:wrong_tone"),
-        ],
-        [
-            InlineKeyboardButton("Too internal",    callback_data=f"reject_reason:{draft_id}:too_internal"),
-            InlineKeyboardButton("Already covered", callback_data=f"reject_reason:{draft_id}:already_covered"),
-        ],
-        [
-            InlineKeyboardButton("Other (free text reply)", callback_data=f"reject_reason:{draft_id}:other"),
-        ],
-    ])
+            [
+                InlineKeyboardButton("Boring", callback_data=f"reject_reason:{draft_id}:boring"),
+                InlineKeyboardButton(
+                    "Wrong tone", callback_data=f"reject_reason:{draft_id}:wrong_tone"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "Too internal", callback_data=f"reject_reason:{draft_id}:too_internal"
+                ),
+                InlineKeyboardButton(
+                    "Already covered", callback_data=f"reject_reason:{draft_id}:already_covered"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "Other (free text reply)", callback_data=f"reject_reason:{draft_id}:other"
+                ),
+            ],
+        ]
+    )
 
 
 def render_thread_for_telegram(text: str) -> str:
@@ -179,11 +186,15 @@ async def send_pending_drafts_after_quiet(app: Application) -> int:
 
     sent = 0
     with db_session.session_scope() as sa:
-        rows = sa.execute(
-            select(Draft).where(Draft.status == "pending").where(
-                Draft.telegram_message_id.is_(None)
+        rows = (
+            sa.execute(
+                select(Draft)
+                .where(Draft.status == "pending")
+                .where(Draft.telegram_message_id.is_(None))
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         ids = [r.id for r in rows]
     for did in ids:
         await send_draft(app, did)

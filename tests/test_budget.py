@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from wire.config import (
-    ClaudeModelsConfig, DigestConfig, GithubConfig, IngestionConfig,
-    LearningConfig, LLMConfig, LoggingConfig, MetricsConfig, OllamaConfig,
-    QuietHoursConfig, ReposLocation, SessionConfig, TelegramConfig,
-    TwitterConfig, WireConfig,
+    ClaudeModelsConfig,
+    DigestConfig,
+    GithubConfig,
+    IngestionConfig,
+    LearningConfig,
+    LLMConfig,
+    LoggingConfig,
+    MetricsConfig,
+    OllamaConfig,
+    QuietHoursConfig,
+    ReposLocation,
+    SessionConfig,
+    TelegramConfig,
+    TwitterConfig,
+    WireConfig,
 )
 from wire.db import session as db_session
-from wire.db.models import Base, BudgetOverride, LLMCall, utc_now
+from wire.db.models import Base, LLMCall, utc_now
 from wire.llm.alerts import (
     evaluate_alert,
     is_drafting_blocked_by_budget,
@@ -23,23 +34,33 @@ from wire.llm.budget import compute_status, current_month_key, record_extension
 
 def _config(cap=10.0, threshold=0.8) -> WireConfig:
     return WireConfig(
-        github=GithubConfig(org="me", app_id=1, installation_id=1,
-                            private_key_path="/d/k.pem", poll_interval_minutes=20),
+        github=GithubConfig(
+            org="me",
+            app_id=1,
+            installation_id=1,
+            private_key_path="/d/k.pem",
+            poll_interval_minutes=20,
+        ),
         repos=ReposLocation(config_path="/d/r.yaml"),
         llm=LLMConfig(
             provider="claude",
             ollama=OllamaConfig(base_url="http://x", model="m", timeout_seconds=10),
             claude=ClaudeModelsConfig(
-                drafting="claude-sonnet-4-6", triage="claude-haiku-4-5",
-                voice_profile="claude-haiku-4-5", digest="claude-haiku-4-5",
+                drafting="claude-sonnet-4-6",
+                triage="claude-haiku-4-5",
+                voice_profile="claude-haiku-4-5",
+                digest="claude-haiku-4-5",
             ),
-            prompt_caching=True, monthly_budget_usd=cap, budget_alert_threshold=threshold,
+            prompt_caching=True,
+            monthly_budget_usd=cap,
+            budget_alert_threshold=threshold,
         ),
         session=SessionConfig(idle_minutes=30, max_hours=4, immediate_trigger_events=[]),
         quiet_hours=QuietHoursConfig(start="22:00", end="07:00", timezone="UTC"),
         telegram=TelegramConfig(bot_token_env="X", chat_id_env="Y"),
-        twitter=TwitterConfig(client_id_env="C", client_secret_env="S",
-                              access_token_path="/d/t.json"),
+        twitter=TwitterConfig(
+            client_id_env="C", client_secret_env="S", access_token_path="/d/t.json"
+        ),
         metrics=MetricsConfig(fetch_cron="0 9 * * *", posts_settle_days=7),
         digest=DigestConfig(cron="0 9 * * 1"),
         learning=LearningConfig(recent_decisions_n=20, recent_posts_n=30),
@@ -62,11 +83,19 @@ def db(tmp_path, monkeypatch):
 def _add_spend(db, dollars: float, when: datetime | None = None):
     when = when or utc_now()
     with db.session_scope() as sa:
-        sa.add(LLMCall(
-            task="drafting", provider="claude", model="claude-sonnet-4-6",
-            fallback=False, input_tokens=1, output_tokens=1,
-            cost_usd=dollars, latency_ms=10, called_at=when,
-        ))
+        sa.add(
+            LLMCall(
+                task="drafting",
+                provider="claude",
+                model="claude-sonnet-4-6",
+                fallback=False,
+                input_tokens=1,
+                output_tokens=1,
+                cost_usd=dollars,
+                latency_ms=10,
+                called_at=when,
+            )
+        )
 
 
 def test_compute_status_no_spend(db):
@@ -142,7 +171,6 @@ def test_evaluate_alert_resets_when_extended(db):
 
 
 def test_spend_outside_month_excluded(db):
-    cfg = _config()
     last_month = utc_now().replace(day=1) - timedelta(days=5)  # ~25 days ago
     _add_spend(db, 50.0, when=last_month)
     _add_spend(db, 1.0)
@@ -152,7 +180,7 @@ def test_spend_outside_month_excluded(db):
 
 
 def test_current_month_key_format():
-    k = current_month_key(datetime(2026, 4, 5, tzinfo=timezone.utc))
+    k = current_month_key(datetime(2026, 4, 5, tzinfo=UTC))
     assert k == "2026-04"
-    k = current_month_key(datetime(2026, 12, 31, tzinfo=timezone.utc))
+    k = current_month_key(datetime(2026, 12, 31, tzinfo=UTC))
     assert k == "2026-12"

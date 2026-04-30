@@ -84,15 +84,17 @@ async def _run_flow(
     verifier, challenge = _make_pkce_pair()
     state = secrets.token_urlsafe(24)
     redirect_uri = f"http://127.0.0.1:{port}/callback"
-    auth_params = urllib.parse.urlencode({
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": " ".join(SCOPES),
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    })
+    auth_params = urllib.parse.urlencode(
+        {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": " ".join(SCOPES),
+            "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }
+    )
     auth_url = f"{AUTH_URL}?{auth_params}"
 
     code_future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
@@ -140,7 +142,10 @@ async def _run_flow(
 def main() -> int:
     cfg_path = Path(os.environ.get("WIRE_CONFIG_PATH", "/data/config.yaml"))
     if not cfg_path.exists():
-        print(f"Config not found at {cfg_path}; set WIRE_CONFIG_PATH or copy data/config.yaml.example.")
+        print(
+            f"Config not found at {cfg_path}; set WIRE_CONFIG_PATH or "
+            "copy data/config.yaml.example."
+        )
         return 1
     cfg = load_config(cfg_path)
     client_id = os.environ.get(cfg.twitter.client_id_env)

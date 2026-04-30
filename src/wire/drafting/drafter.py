@@ -14,18 +14,16 @@ drafter's.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from datetime import datetime, time as dt_time, timezone
+from datetime import UTC, datetime
+from datetime import time as dt_time
 from pathlib import Path
-from typing import Iterable
-from zoneinfo import ZoneInfo
 
 import structlog
 from pydantic import BaseModel, Field
 from sqlalchemy import asc, desc, select
 
-from wire.config import LLMConfig, QuietHoursConfig, ReposFile, WireConfig
+from wire.config import QuietHoursConfig, ReposFile, WireConfig
 from wire.db import session as db_session
 from wire.db.models import (
     Decision,
@@ -40,7 +38,7 @@ from wire.db.models import (
 from wire.llm.alerts import is_drafting_blocked_by_budget
 from wire.llm.budget import log_llm_call as _log_llm_call
 from wire.llm.caching import text_block
-from wire.llm.provider import LLMError, LLMProvider, LLMResponse, parse_json_lenient
+from wire.llm.provider import LLMError, LLMProvider, parse_json_lenient
 
 log = structlog.get_logger()
 
@@ -70,8 +68,10 @@ class DraftResponse(BaseModel):
 
 def is_in_quiet_hours(qh: QuietHoursConfig, *, now: datetime | None = None) -> bool:
     if now is None:
-        now = datetime.now(timezone.utc)
-    local = now.astimezone(qh.tzinfo) if now.tzinfo else now.replace(tzinfo=timezone.utc).astimezone(qh.tzinfo)
+        now = datetime.now(UTC)
+    local = (
+        now.astimezone(qh.tzinfo) if now.tzinfo else now.replace(tzinfo=UTC).astimezone(qh.tzinfo)
+    )
     t = local.time()
     return _between(t, qh.start, qh.end)
 
@@ -89,8 +89,8 @@ def _between(t: dt_time, start: dt_time, end: dt_time) -> bool:
 
 @dataclass
 class PromptBlocks:
-    system_blocks: list[dict]   # for the system parameter, with cache_control
-    user_message: str           # the variable session-events block
+    system_blocks: list[dict]  # for the system parameter, with cache_control
+    user_message: str  # the variable session-events block
 
 
 def _format_event_line(e: Event) -> str:
@@ -101,7 +101,9 @@ def _format_event_line(e: Event) -> str:
         commits = raw.get("commits") or []
         if commits:
             first = commits[0].get("message", "").splitlines()[0][:140]
-            bits.append(f'"{first}" (+{len(commits) - 1} more)' if len(commits) > 1 else f'"{first}"')
+            bits.append(
+                f'"{first}" (+{len(commits) - 1} more)' if len(commits) > 1 else f'"{first}"'
+            )
     elif e.event_type == "PullRequestEvent":
         pr = raw.get("pull_request") or {}
         title = (pr.get("title") or "")[:140]
@@ -120,8 +122,7 @@ def _format_event_line(e: Event) -> str:
         issue = raw.get("issue") or {}
         comment = raw.get("comment") or {}
         bits.append(
-            f'Comment on "{(issue.get("title") or "")[:80]}": '
-            f'{(comment.get("body") or "")[:140]}'
+            f'Comment on "{(issue.get("title") or "")[:80]}": {(comment.get("body") or "")[:140]}'
         )
     if e.triage_reason:
         bits.append(f'reason="{e.triage_reason}"')
@@ -164,15 +165,17 @@ def _voice_profile_text(sa) -> str:
 
 def _recent_settled_posts(sa, n: int, settle_days: int) -> str:
     """Posts ≥ settle_days old, with the latest metric snapshot inline."""
-    cutoff = utc_now()
-    cutoff = cutoff.replace(microsecond=0)
-    cutoff_ts = cutoff
     # Most recent N posts older than settle_days.
     from datetime import timedelta as _td
+
     cutoff_dt = utc_now() - _td(days=settle_days)
-    rows = sa.execute(
-        select(Post).where(Post.posted_at <= cutoff_dt).order_by(desc(Post.posted_at)).limit(n)
-    ).scalars().all()
+    rows = (
+        sa.execute(
+            select(Post).where(Post.posted_at <= cutoff_dt).order_by(desc(Post.posted_at)).limit(n)
+        )
+        .scalars()
+        .all()
+    )
     if not rows:
         return "(no settled posts yet)"
     lines = []
@@ -186,14 +189,12 @@ def _recent_settled_posts(sa, n: int, settle_days: int) -> str:
             if latest
             else "metrics=none"
         )
-        lines.append(f"- [{p.posted_at.date()}] \"{p.text[:200]}\"  ({m})")
+        lines.append(f'- [{p.posted_at.date()}] "{p.text[:200]}"  ({m})')
     return "\n".join(lines)
 
 
 def _recent_decisions(sa, n: int) -> str:
-    rows = sa.execute(
-        select(Decision).order_by(desc(Decision.decided_at)).limit(n)
-    ).scalars().all()
+    rows = sa.execute(select(Decision).order_by(desc(Decision.decided_at)).limit(n)).scalars().all()
     if not rows:
         return "(no decisions yet)"
     lines = []
@@ -202,7 +203,7 @@ def _recent_decisions(sa, n: int) -> str:
         if d.draft is not None:
             draft_text = d.draft.text[:200]
         if d.decision == "approved":
-            lines.append(f"✅ APPROVED: \"{draft_text}\"")
+            lines.append(f'✅ APPROVED: "{draft_text}"')
         elif d.decision == "rejected":
             lines.append(f'❌ REJECTED: "{draft_text}" — reason: "{d.reject_reason or "?"}"')
         elif d.decision == "edited":
@@ -214,10 +215,9 @@ def _recent_decisions(sa, n: int) -> str:
 def _median_metric_summary(sa) -> str:
     # Quick rolling-30-day medians for impressions and likes.
     from datetime import timedelta as _td
+
     cutoff = utc_now() - _td(days=30)
-    rows = sa.execute(
-        select(Post.id).where(Post.posted_at >= cutoff)
-    ).scalars().all()
+    rows = sa.execute(select(Post.id).where(Post.posted_at >= cutoff)).scalars().all()
     if not rows:
         return "no recent posts"
     impressions = []
@@ -269,15 +269,17 @@ def build_prompt_blocks(
 
     system_text = _system_prompt() + "\n\nVoice profile:\n" + voice
 
-    learning_text = "\n".join([
-        "─── Recent posts (last 30, settled ≥ 7d, with performance) ───",
-        recent_posts,
-        "",
-        f"Reference: trailing 30-day median is {median_summary}.",
-        "",
-        "─── Recent decisions (last 20) ───",
-        recent_decisions,
-    ])
+    learning_text = "\n".join(
+        [
+            "─── Recent posts (last 30, settled ≥ 7d, with performance) ───",
+            recent_posts,
+            "",
+            f"Reference: trailing 30-day median is {median_summary}.",
+            "",
+            "─── Recent decisions (last 20) ───",
+            recent_decisions,
+        ]
+    )
 
     cached_caching = config.llm.prompt_caching
     system_blocks = [
@@ -295,20 +297,22 @@ def build_prompt_blocks(
 
 def _closed_undrafted_sessions(min_score: float) -> list[int]:
     with db_session.session_scope() as sa:
-        rows = sa.execute(
-            select(Session)
-            .where(Session.closed_reason.is_not(None))
-            .where(Session.drafted_at.is_(None))
-            .order_by(asc(Session.ended_at))
-        ).scalars().all()
+        rows = (
+            sa.execute(
+                select(Session)
+                .where(Session.closed_reason.is_not(None))
+                .where(Session.drafted_at.is_(None))
+                .order_by(asc(Session.ended_at))
+            )
+            .scalars()
+            .all()
+        )
         return [s.id for s in rows]
 
 
 def _all_events_below_threshold(session_id: int, threshold: float) -> bool:
     with db_session.session_scope() as sa:
-        events = sa.execute(
-            select(Event).where(Event.session_id == session_id)
-        ).scalars().all()
+        events = sa.execute(select(Event).where(Event.session_id == session_id)).scalars().all()
         if not events:
             return True
         return all((e.triage_score or 0.0) < threshold for e in events)
@@ -392,18 +396,22 @@ async def draft_pending_sessions(
                 continue
             s.drafted_at = utc_now()
             for item in parsed.drafts:
-                sa.add(Draft(
-                    session_id=sid,
-                    text=item.text,
-                    reasoning=item.reasoning,
-                ))
+                sa.add(
+                    Draft(
+                        session_id=sid,
+                        text=item.text,
+                        reasoning=item.reasoning,
+                    )
+                )
 
-        results.append(DraftingResult(
-            session_id=sid,
-            drafts_created=len(parsed.drafts),
-            skip_reason=parsed.skip_reason,
-            deferred_quiet_hours=False,
-        ))
+        results.append(
+            DraftingResult(
+                session_id=sid,
+                drafts_created=len(parsed.drafts),
+                skip_reason=parsed.skip_reason,
+                deferred_quiet_hours=False,
+            )
+        )
         log.info(
             "wire.drafting.session_done",
             session_id=sid,

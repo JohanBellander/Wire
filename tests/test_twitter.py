@@ -33,8 +33,10 @@ async def test_post_single_tweet(tmp_path, respx_mock):
     )
 
     client = TwitterClient(
-        client_id="cid", client_secret="csec",
-        token_path=token_path, username="me",
+        client_id="cid",
+        client_secret="csec",
+        token_path=token_path,
+        username="me",
     )
     try:
         result = await client.post("hi")
@@ -58,7 +60,10 @@ async def test_post_thread_chains_replies(tmp_path, respx_mock):
     respx_mock.post("https://api.x.com/2/tweets").mock(side_effect=handler)
 
     client = TwitterClient(
-        client_id="cid", client_secret="csec", token_path=token_path, username="me",
+        client_id="cid",
+        client_secret="csec",
+        token_path=token_path,
+        username="me",
     )
     try:
         result = await client.post("first part\n---\nsecond part\n---\nthird part")
@@ -82,7 +87,10 @@ async def test_auth_error_does_not_retry(tmp_path, respx_mock):
         return_value=httpx.Response(401, text="invalid token")
     )
     client = TwitterClient(
-        client_id="cid", client_secret="csec", token_path=token_path, username="me",
+        client_id="cid",
+        client_secret="csec",
+        token_path=token_path,
+        username="me",
     )
     try:
         with pytest.raises(TwitterAuthError):
@@ -96,6 +104,7 @@ async def test_rate_limit_waits_then_retries(tmp_path, respx_mock, monkeypatch):
     token_path = _write_token(tmp_path)
     # Patch sleep to be instant
     import wire.twitter.client as tw
+
     monkeypatch.setattr(tw.asyncio, "sleep", _instant_sleep)
 
     calls = {"n": 0}
@@ -113,7 +122,10 @@ async def test_rate_limit_waits_then_retries(tmp_path, respx_mock, monkeypatch):
     respx_mock.post("https://api.x.com/2/tweets").mock(side_effect=handler)
 
     client = TwitterClient(
-        client_id="cid", client_secret="csec", token_path=token_path, username="me",
+        client_id="cid",
+        client_secret="csec",
+        token_path=token_path,
+        username="me",
     )
     try:
         result = await client.post("hi")
@@ -127,15 +139,29 @@ async def test_rate_limit_waits_then_retries(tmp_path, respx_mock, monkeypatch):
 async def test_fetch_metrics_batches_under_100(tmp_path, respx_mock):
     token_path = _write_token(tmp_path)
     respx_mock.get("https://api.x.com/2/tweets").mock(
-        return_value=httpx.Response(200, json={"data": [
-            {"id": "1", "public_metrics": {
-                "impression_count": 100, "like_count": 5,
-                "retweet_count": 1, "reply_count": 0, "bookmark_count": 2,
-            }},
-        ]})
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "1",
+                        "public_metrics": {
+                            "impression_count": 100,
+                            "like_count": 5,
+                            "retweet_count": 1,
+                            "reply_count": 0,
+                            "bookmark_count": 2,
+                        },
+                    },
+                ]
+            },
+        )
     )
     client = TwitterClient(
-        client_id="cid", client_secret="csec", token_path=token_path, username="me",
+        client_id="cid",
+        client_secret="csec",
+        token_path=token_path,
+        username="me",
     )
     try:
         results = await client.fetch_metrics(["1"])
@@ -150,16 +176,24 @@ async def test_fetch_metrics_batches_under_100(tmp_path, respx_mock):
 async def test_token_refreshed_when_expiring(tmp_path, respx_mock):
     # Token already expired
     tok = TwitterToken(
-        access_token="old", refresh_token="ref", expires_at=time.time() - 1, scope="",
+        access_token="old",
+        refresh_token="ref",
+        expires_at=time.time() - 1,
+        scope="",
     )
     token_path = tmp_path / "tok.json"
     save_token(token_path, tok)
 
     respx_mock.post("https://api.x.com/2/oauth2/token").mock(
-        return_value=httpx.Response(200, json={
-            "access_token": "fresh", "refresh_token": "ref-2",
-            "expires_in": 7200, "scope": "tweet.read tweet.write",
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "fresh",
+                "refresh_token": "ref-2",
+                "expires_in": 7200,
+                "scope": "tweet.read tweet.write",
+            },
+        )
     )
     captured: list[str] = []
 
@@ -170,7 +204,10 @@ async def test_token_refreshed_when_expiring(tmp_path, respx_mock):
     respx_mock.post("https://api.x.com/2/tweets").mock(side_effect=post_handler)
 
     client = TwitterClient(
-        client_id="cid", client_secret="csec", token_path=token_path, username="me",
+        client_id="cid",
+        client_secret="csec",
+        token_path=token_path,
+        username="me",
     )
     try:
         await client.post("hi")

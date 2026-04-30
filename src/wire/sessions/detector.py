@@ -13,12 +13,12 @@ in order, and closes sessions whose tail is far enough in the past.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Iterable
 
 import structlog
-from sqlalchemy import and_, asc, select
+from sqlalchemy import asc, select
 
 from wire.db import session as db_session
 from wire.db.models import Event, Session, utc_now
@@ -58,12 +58,14 @@ def _open_session_for(repo: str, sa_session) -> Session | None:
 
 
 def _ungrouped_events(repo: str, sa_session) -> list[Event]:
-    return list(sa_session.execute(
-        select(Event)
-        .where(Event.repo == repo)
-        .where(Event.session_id.is_(None))
-        .order_by(asc(Event.occurred_at))
-    ).scalars())
+    return list(
+        sa_session.execute(
+            select(Event)
+            .where(Event.repo == repo)
+            .where(Event.session_id.is_(None))
+            .order_by(asc(Event.occurred_at))
+        ).scalars()
+    )
 
 
 def _close_session(s: Session, when: datetime, reason: str) -> None:
@@ -71,7 +73,9 @@ def _close_session(s: Session, when: datetime, reason: str) -> None:
     s.closed_reason = reason
 
 
-def _should_join(open_session: Session, event: Event, cfg: DetectorConfig, last_in_session_at: datetime) -> bool:
+def _should_join(
+    open_session: Session, event: Event, cfg: DetectorConfig, last_in_session_at: datetime
+) -> bool:
     """Decide whether `event` joins `open_session`. Only the idle gap matters
     here — the max_hours boundary is handled *after* admitting the event so
     the closing reason is recorded as 'max_hours' on the session that just
@@ -93,12 +97,15 @@ def assign_sessions_for_repo(repo: str, cfg: DetectorConfig) -> int:
         # Determine the last-event-in-session timestamp if there's an open session.
         last_at: datetime | None = None
         if open_sess is not None:
-            last_at = sa.execute(
-                select(Event.occurred_at)
-                .where(Event.session_id == open_sess.id)
-                .order_by(Event.occurred_at.desc())
-                .limit(1)
-            ).scalar_one_or_none() or open_sess.started_at
+            last_at = (
+                sa.execute(
+                    select(Event.occurred_at)
+                    .where(Event.session_id == open_sess.id)
+                    .order_by(Event.occurred_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                or open_sess.started_at
+            )
 
         for e in events:
             # Immediate trigger forces close-if-open then a fresh single-event session.
@@ -117,7 +124,11 @@ def assign_sessions_for_repo(repo: str, cfg: DetectorConfig) -> int:
                 continue
 
             # Decide: extend open session or start a new one.
-            if open_sess is not None and last_at is not None and _should_join(open_sess, e, cfg, last_at):
+            if (
+                open_sess is not None
+                and last_at is not None
+                and _should_join(open_sess, e, cfg, last_at)
+            ):
                 e.session_id = open_sess.id
                 last_at = e.occurred_at
                 # Did we just exceed max_hours? Close after assigning.

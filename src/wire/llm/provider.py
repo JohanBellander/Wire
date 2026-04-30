@@ -11,10 +11,9 @@ build_provider() picks the right shape from the LLMConfig toggle.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 import httpx
@@ -23,7 +22,6 @@ from anthropic import AsyncAnthropic
 from pydantic import BaseModel, ValidationError
 from tenacity import (
     AsyncRetrying,
-    RetryError,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -103,7 +101,7 @@ def parse_json_lenient(s: str) -> Any:
     if text.startswith("```"):
         nl = text.find("\n")
         if nl != -1:
-            text = text[nl + 1:]
+            text = text[nl + 1 :]
         text = text.rstrip()
         if text.endswith("```"):
             text = text[:-3].rstrip()
@@ -120,7 +118,7 @@ def parse_json_lenient(s: str) -> Any:
         end = text.rfind(closer)
         if start != -1 and end > start:
             try:
-                return json.loads(text[start:end + 1])
+                return json.loads(text[start : end + 1])
             except json.JSONDecodeError:
                 continue
 
@@ -225,9 +223,7 @@ class ClaudeProvider:
                 cache_read_tokens=cache_read,
                 cache_write_tokens=cache_write,
                 latency_ms=latency,
-                cost_usd=estimate_cost_usd(
-                    model, in_t, out_t, cache_read, cache_write
-                ),
+                cost_usd=estimate_cost_usd(model, in_t, out_t, cache_read, cache_write),
                 task=task,
             )
 
@@ -357,7 +353,9 @@ def _content_to_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "\n\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+        return "\n\n".join(
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        )
     return str(content)
 
 
@@ -385,9 +383,7 @@ class FallbackProvider:
         max_tokens: int = 1500,
     ) -> LLMResponse:
         try:
-            resp = await self.primary.complete(
-                task, system, messages, response_format, max_tokens
-            )
+            resp = await self.primary.complete(task, system, messages, response_format, max_tokens)
             return resp
         except LLMAuthError:
             # Auth errors are configuration bugs — surfacing them through the
@@ -402,9 +398,7 @@ class FallbackProvider:
             )
 
         # Fall through: invoke Claude.
-        resp = await self.fallback.complete(
-            task, system, messages, response_format, max_tokens
-        )
+        resp = await self.fallback.complete(task, system, messages, response_format, max_tokens)
         resp.fallback_used = True
         return resp
 

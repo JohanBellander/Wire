@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 import httpx
 import jwt
@@ -34,14 +33,14 @@ GITHUB_API = "https://api.github.com"
 
 
 def _utc_now_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _parse_github_ts(s: str) -> datetime:
     """GitHub returns ISO 8601 like '2026-04-29T10:00:00Z'. Convert to naive UTC."""
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    return datetime.fromisoformat(s).astimezone(timezone.utc).replace(tzinfo=None)
+    return datetime.fromisoformat(s).astimezone(UTC).replace(tzinfo=None)
 
 
 @dataclass
@@ -89,6 +88,7 @@ class GitHubClient:
     @classmethod
     def from_files(cls, *, app_id: int, installation_id: int, private_key_path, org: str):
         from pathlib import Path
+
         path = Path(private_key_path)
         if not path.exists():
             raise GitHubAuthError(f"GitHub App private key not found: {path}")
@@ -122,8 +122,8 @@ class GitHubClient:
         """Sign an App JWT (good for ≤10 min). Used to mint installation tokens."""
         now = int(time.time())
         payload = {
-            "iat": now - 60,           # tolerate small clock skew
-            "exp": now + 9 * 60,       # 9 min — under the 10-min hard cap
+            "iat": now - 60,  # tolerate small clock skew
+            "exp": now + 9 * 60,  # 9 min — under the 10-min hard cap
             "iss": str(self.app_id),
         }
         return jwt.encode(payload, self.private_key_pem, algorithm="RS256")
@@ -149,7 +149,7 @@ class GitHubClient:
         resp.raise_for_status()
         data = resp.json()
         token = data["token"]
-        expires_at = _parse_github_ts(data["expires_at"]).replace(tzinfo=timezone.utc).timestamp()
+        expires_at = _parse_github_ts(data["expires_at"]).replace(tzinfo=UTC).timestamp()
         self._installation_token = _CachedToken(token=token, expires_at=expires_at)
         return token
 
@@ -171,7 +171,9 @@ class GitHubClient:
                 headers = await self._auth_headers()
                 resp = await client.get(url, params=params, headers=headers)
                 if resp.status_code in (401, 403):
-                    raise GitHubAuthError(f"GitHub auth failed at {url}: {resp.status_code} {resp.text[:200]}")
+                    raise GitHubAuthError(
+                        f"GitHub auth failed at {url}: {resp.status_code} {resp.text[:200]}"
+                    )
                 if 500 <= resp.status_code < 600:
                     # Raise HTTPStatusError so tenacity sees a 5xx and retries.
                     resp.raise_for_status()
@@ -180,7 +182,9 @@ class GitHubClient:
 
     # --- public fetch methods -------------------------------------------------
 
-    async def list_events(self, repo: str, *, since: datetime | None = None, max_pages: int = 3) -> list[dict]:
+    async def list_events(
+        self, repo: str, *, since: datetime | None = None, max_pages: int = 3
+    ) -> list[dict]:
         """List events from /repos/{owner}/{repo}/events. Pages until `since`
         is reached, max_pages exhausted, or GitHub returns 422 (the events API
         hard-caps total return at ~300 events / 3 pages of per_page=100, regardless

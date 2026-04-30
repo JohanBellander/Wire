@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 import httpx
-import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -38,6 +36,7 @@ def gh_client(fake_pem) -> GitHubClient:
 def _stub_installation_token(client: GitHubClient) -> None:
     """Bypass the JWT exchange — set the cached token directly."""
     from wire.ingestion.github_client import _CachedToken
+
     client._installation_token = _CachedToken(token="fake-token", expires_at=time.time() + 3600)
 
 
@@ -47,23 +46,46 @@ async def test_list_events_handles_422_gracefully(gh_client, respx_mock):
     end-of-pagination, not raised as an error."""
     _stub_installation_token(gh_client)
 
-    page1 = [{"id": str(i), "type": "PushEvent", "actor": {"login": "x"},
-              "created_at": "2026-04-30T10:00:00Z", "payload": {}}
-             for i in range(100)]
-    page2 = [{"id": str(i + 100), "type": "PushEvent", "actor": {"login": "x"},
-              "created_at": "2026-04-30T09:00:00Z", "payload": {}}
-             for i in range(100)]
-    page3 = [{"id": str(i + 200), "type": "PushEvent", "actor": {"login": "x"},
-              "created_at": "2026-04-30T08:00:00Z", "payload": {}}
-             for i in range(100)]
+    page1 = [
+        {
+            "id": str(i),
+            "type": "PushEvent",
+            "actor": {"login": "x"},
+            "created_at": "2026-04-30T10:00:00Z",
+            "payload": {},
+        }
+        for i in range(100)
+    ]
+    page2 = [
+        {
+            "id": str(i + 100),
+            "type": "PushEvent",
+            "actor": {"login": "x"},
+            "created_at": "2026-04-30T09:00:00Z",
+            "payload": {},
+        }
+        for i in range(100)
+    ]
+    page3 = [
+        {
+            "id": str(i + 200),
+            "type": "PushEvent",
+            "actor": {"login": "x"},
+            "created_at": "2026-04-30T08:00:00Z",
+            "payload": {},
+        }
+        for i in range(100)
+    ]
 
     route = respx_mock.get("https://api.github.com/repos/testorg/myrepo/events")
-    route.mock(side_effect=[
-        httpx.Response(200, json=page1),
-        httpx.Response(200, json=page2),
-        httpx.Response(200, json=page3),
-        httpx.Response(422, text="end of pagination"),  # would 422 on page 4
-    ])
+    route.mock(
+        side_effect=[
+            httpx.Response(200, json=page1),
+            httpx.Response(200, json=page2),
+            httpx.Response(200, json=page3),
+            httpx.Response(422, text="end of pagination"),  # would 422 on page 4
+        ]
+    )
 
     try:
         events = await gh_client.list_events("myrepo", max_pages=5)
@@ -79,9 +101,16 @@ async def test_list_events_stops_at_max_pages_default_3(gh_client, respx_mock):
     """Default max_pages should be 3 — matches GitHub's actual cap."""
     _stub_installation_token(gh_client)
 
-    full_page = [{"id": str(i), "type": "PushEvent", "actor": {"login": "x"},
-                  "created_at": "2026-04-30T10:00:00Z", "payload": {}}
-                 for i in range(100)]
+    full_page = [
+        {
+            "id": str(i),
+            "type": "PushEvent",
+            "actor": {"login": "x"},
+            "created_at": "2026-04-30T10:00:00Z",
+            "payload": {},
+        }
+        for i in range(100)
+    ]
 
     route = respx_mock.get("https://api.github.com/repos/testorg/myrepo/events")
     # Always return a full page; default max_pages=3 should cap iteration.
@@ -120,15 +149,24 @@ async def test_5xx_is_retried(gh_client, respx_mock, monkeypatch):
         lambda **kw: __import__("tenacity").wait_fixed(0),
     )
 
-    page1 = [{"id": "1", "type": "PushEvent", "actor": {"login": "x"},
-              "created_at": "2026-04-30T10:00:00Z", "payload": {}}]
+    page1 = [
+        {
+            "id": "1",
+            "type": "PushEvent",
+            "actor": {"login": "x"},
+            "created_at": "2026-04-30T10:00:00Z",
+            "payload": {},
+        }
+    ]
 
     route = respx_mock.get("https://api.github.com/repos/testorg/myrepo/events")
-    route.mock(side_effect=[
-        httpx.Response(500, text="internal error"),  # first attempt fails
-        httpx.Response(502, text="bad gateway"),      # second attempt fails
-        httpx.Response(200, json=page1),              # third attempt succeeds
-    ])
+    route.mock(
+        side_effect=[
+            httpx.Response(500, text="internal error"),  # first attempt fails
+            httpx.Response(502, text="bad gateway"),  # second attempt fails
+            httpx.Response(200, json=page1),  # third attempt succeeds
+        ]
+    )
 
     try:
         events = await gh_client.list_events("myrepo")
@@ -159,14 +197,17 @@ async def test_5xx_eventually_gives_up_after_retries(gh_client, respx_mock, monk
 @pytest.mark.asyncio
 async def test_compare_commits_returns_commit_array(gh_client, respx_mock):
     _stub_installation_token(gh_client)
-    respx_mock.get(
-        "https://api.github.com/repos/testorg/myrepo/compare/aaa...bbb"
-    ).mock(return_value=httpx.Response(200, json={
-        "commits": [
-            {"sha": "abc1", "commit": {"message": "feat: add x", "author": {"name": "j"}}},
-            {"sha": "def2", "commit": {"message": "fix: y", "author": {"name": "j"}}},
-        ]
-    }))
+    respx_mock.get("https://api.github.com/repos/testorg/myrepo/compare/aaa...bbb").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "commits": [
+                    {"sha": "abc1", "commit": {"message": "feat: add x", "author": {"name": "j"}}},
+                    {"sha": "def2", "commit": {"message": "fix: y", "author": {"name": "j"}}},
+                ]
+            },
+        )
+    )
     try:
         commits = await gh_client.compare_commits("myrepo", "aaa", "bbb")
     finally:
@@ -178,9 +219,9 @@ async def test_compare_commits_returns_commit_array(gh_client, respx_mock):
 @pytest.mark.asyncio
 async def test_compare_commits_returns_none_on_404(gh_client, respx_mock):
     _stub_installation_token(gh_client)
-    respx_mock.get(
-        "https://api.github.com/repos/testorg/myrepo/compare/aaa...bbb"
-    ).mock(return_value=httpx.Response(404, text="not found"))
+    respx_mock.get("https://api.github.com/repos/testorg/myrepo/compare/aaa...bbb").mock(
+        return_value=httpx.Response(404, text="not found")
+    )
     try:
         commits = await gh_client.compare_commits("myrepo", "aaa", "bbb")
     finally:

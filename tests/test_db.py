@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy.exc import IntegrityError
 
 from wire.db import session as db_session
 from wire.db.models import (
@@ -23,7 +24,6 @@ from wire.db.models import (
     VoiceProfile,
     utc_now,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,7 +55,8 @@ def test_alembic_upgrade_creates_all_tables(tmp_path, monkeypatch):
     conn = sqlite3.connect(db_path)
     try:
         names = sorted(
-            t for (t,) in conn.execute(
+            t
+            for (t,) in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
         )
@@ -80,16 +81,26 @@ def test_alembic_upgrade_creates_all_tables(tmp_path, monkeypatch):
 
 def test_event_unique_github_id(db):
     with db.session_scope() as s:
-        s.add(Event(
-            github_id="evt-1", repo="r", event_type="push", payload={},
-            occurred_at=utc_now(),
-        ))
-    with pytest.raises(Exception):  # IntegrityError
-        with db.session_scope() as s:
-            s.add(Event(
-                github_id="evt-1", repo="r", event_type="push", payload={},
+        s.add(
+            Event(
+                github_id="evt-1",
+                repo="r",
+                event_type="push",
+                payload={},
                 occurred_at=utc_now(),
-            ))
+            )
+        )
+    with pytest.raises(IntegrityError):
+        with db.session_scope() as s:
+            s.add(
+                Event(
+                    github_id="evt-1",
+                    repo="r",
+                    event_type="push",
+                    payload={},
+                    occurred_at=utc_now(),
+                )
+            )
 
 
 def test_event_session_relationship(db):
@@ -98,12 +109,26 @@ def test_event_session_relationship(db):
         s.add(sess)
         s.flush()
         sid = sess.id
-        s.add_all([
-            Event(github_id="a", repo="winetrackr", event_type="push", payload={},
-                  occurred_at=utc_now(), session_id=sid),
-            Event(github_id="b", repo="winetrackr", event_type="pr", payload={},
-                  occurred_at=utc_now() + timedelta(minutes=5), session_id=sid),
-        ])
+        s.add_all(
+            [
+                Event(
+                    github_id="a",
+                    repo="winetrackr",
+                    event_type="push",
+                    payload={},
+                    occurred_at=utc_now(),
+                    session_id=sid,
+                ),
+                Event(
+                    github_id="b",
+                    repo="winetrackr",
+                    event_type="pr",
+                    payload={},
+                    occurred_at=utc_now() + timedelta(minutes=5),
+                    session_id=sid,
+                ),
+            ]
+        )
 
     with db.session_scope() as s:
         sess = s.get(Session, sid)
@@ -125,15 +150,23 @@ def test_draft_status_default_pending(db):
 def test_post_decision_metric_chain(db):
     with db.session_scope() as s:
         d = Draft(text="t", status="approved")
-        s.add(d); s.flush()
+        s.add(d)
+        s.flush()
         post = Post(draft_id=d.id, twitter_id="tw-1", text="t", posted_at=utc_now())
-        s.add(post); s.flush()
-        s.add_all([
-            Decision(draft_id=d.id, decision="approved", decided_at=utc_now()),
-            Metric(post_id=post.id, impressions=1, likes=2),
-            Metric(post_id=post.id, fetched_at=utc_now() + timedelta(days=1),
-                   impressions=10, likes=5),
-        ])
+        s.add(post)
+        s.flush()
+        s.add_all(
+            [
+                Decision(draft_id=d.id, decision="approved", decided_at=utc_now()),
+                Metric(post_id=post.id, impressions=1, likes=2),
+                Metric(
+                    post_id=post.id,
+                    fetched_at=utc_now() + timedelta(days=1),
+                    impressions=10,
+                    likes=5,
+                ),
+            ]
+        )
 
     with db.session_scope() as s:
         post = s.execute(
@@ -147,13 +180,21 @@ def test_post_decision_metric_chain(db):
 
 def test_llm_call_logging(db):
     with db.session_scope() as s:
-        s.add(LLMCall(
-            task="drafting", provider="claude", model="claude-sonnet-4-6",
-            fallback=False, input_tokens=1200, output_tokens=180,
-            cost_usd=0.0072, latency_ms=2300,
-        ))
+        s.add(
+            LLMCall(
+                task="drafting",
+                provider="claude",
+                model="claude-sonnet-4-6",
+                fallback=False,
+                input_tokens=1200,
+                output_tokens=180,
+                cost_usd=0.0072,
+                latency_ms=2300,
+            )
+        )
     with db.session_scope() as s:
         from sqlalchemy import select
+
         rows = s.execute(select(LLMCall)).scalars().all()
         assert len(rows) == 1
         assert rows[0].fallback is False
@@ -164,6 +205,7 @@ def test_voice_profile_writable(db):
         s.add(VoiceProfile(profile_text="terse, lowercase, debug-story-shaped"))
     with db.session_scope() as s:
         from sqlalchemy import select
+
         rows = s.execute(select(VoiceProfile)).scalars().all()
         assert rows[0].profile_text.startswith("terse")
 
@@ -171,12 +213,18 @@ def test_voice_profile_writable(db):
 def test_payload_json_roundtrip(db):
     payload = {"head_sha": "abc", "files": ["a.py"], "stats": {"add": 10, "del": 3}}
     with db.session_scope() as s:
-        s.add(Event(
-            github_id="evt-json", repo="r", event_type="push",
-            payload=payload, occurred_at=utc_now(),
-        ))
+        s.add(
+            Event(
+                github_id="evt-json",
+                repo="r",
+                event_type="push",
+                payload=payload,
+                occurred_at=utc_now(),
+            )
+        )
     with db.session_scope() as s:
         from sqlalchemy import select
+
         e = s.execute(select(Event).where(Event.github_id == "evt-json")).scalar_one()
         # JSON column round-trips dicts/lists
         assert e.payload == payload

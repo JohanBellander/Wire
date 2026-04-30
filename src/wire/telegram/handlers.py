@@ -12,10 +12,8 @@ State machine:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from typing import Any
 
 import structlog
 from telegram import Update
@@ -30,7 +28,7 @@ EDIT_TIMEOUT_SECONDS = 600  # 10 minutes per spec
 
 
 def _now_ts() -> float:
-    return datetime.now(timezone.utc).timestamp()
+    return datetime.now(UTC).timestamp()
 
 
 def _set_state(context: ContextTypes.DEFAULT_TYPE, user_id: int, kind: str, draft_id: int) -> None:
@@ -119,8 +117,11 @@ async def _on_approve(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_
 # ---------------- reject -----------------------------------------------------
 
 
-async def _on_reject_open(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_id: int) -> None:
+async def _on_reject_open(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, draft_id: int
+) -> None:
     from wire.telegram.bot import reject_reason_keyboard
+
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=f"Why reject draft #{draft_id}?",
@@ -220,7 +221,11 @@ async def _commit_edit(
     _record_decision(draft_id, decision="edited", edited_text=edited_text, edit_diff=diff_json)
     _set_status(draft_id, "edited")
     _record_post(draft_id, twitter_id=result.tweet_id, text=result.posted_text)
-    msg = f"✏️ Edited and posted: {result.url}" if getattr(result, "url", None) else "✏️ Edited and posted."
+    msg = (
+        f"✏️ Edited and posted: {result.url}"
+        if getattr(result, "url", None)
+        else "✏️ Edited and posted."
+    )
     await _reply(update, msg)
 
 
@@ -230,11 +235,13 @@ def _diff_opcodes(before: str, after: str) -> dict:
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
             continue
-        ops.append({
-            "tag": tag,
-            "before": before[i1:i2],
-            "after": after[j1:j2],
-        })
+        ops.append(
+            {
+                "tag": tag,
+                "before": before[i1:i2],
+                "after": after[j1:j2],
+            }
+        )
     return {"opcodes": ops, "ratio": sm.ratio(), "before_len": len(before), "after_len": len(after)}
 
 
@@ -263,23 +270,27 @@ def _record_decision(
     edit_diff: str | None = None,
 ) -> None:
     with db_session.session_scope() as sa:
-        sa.add(Decision(
-            draft_id=draft_id,
-            decision=decision,
-            reject_reason=reject_reason,
-            edited_text=edited_text,
-            edit_diff=edit_diff,
-        ))
+        sa.add(
+            Decision(
+                draft_id=draft_id,
+                decision=decision,
+                reject_reason=reject_reason,
+                edited_text=edited_text,
+                edit_diff=edit_diff,
+            )
+        )
 
 
 def _record_post(draft_id: int, *, twitter_id: str, text: str) -> None:
     with db_session.session_scope() as sa:
-        sa.add(Post(
-            draft_id=draft_id,
-            twitter_id=str(twitter_id),
-            text=text,
-            posted_at=utc_now(),
-        ))
+        sa.add(
+            Post(
+                draft_id=draft_id,
+                twitter_id=str(twitter_id),
+                text=text,
+                posted_at=utc_now(),
+            )
+        )
 
 
 async def _reply(update: Update, text: str) -> None:
@@ -302,9 +313,13 @@ def expire_old_saved_drafts(*, max_age_hours: int = 24) -> int:
     cutoff = utc_now() - timedelta(hours=max_age_hours)
     expired = 0
     with db_session.session_scope() as sa:
-        rows = sa.execute(
-            select(Draft).where(Draft.status == "pending").where(Draft.created_at < cutoff)
-        ).scalars().all()
+        rows = (
+            sa.execute(
+                select(Draft).where(Draft.status == "pending").where(Draft.created_at < cutoff)
+            )
+            .scalars()
+            .all()
+        )
         for d in rows:
             d.status = "expired"
             expired += 1

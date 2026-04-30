@@ -61,4 +61,4 @@ tests/            # pytest
 
 ## License
 
-Proprietary — single-user self-hosted deployment.
+Apache-2.0 — see [`LICENSE`](./LICENSE).

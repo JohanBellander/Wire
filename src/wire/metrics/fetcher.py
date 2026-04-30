@@ -8,7 +8,7 @@ drafting prompt.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import structlog
 from sqlalchemy import select
@@ -25,9 +25,7 @@ async def fetch_recent_metrics(client: TwitterClient, *, max_age_days: int = 30)
     the number of metric rows appended."""
     cutoff = utc_now() - timedelta(days=max_age_days)
     with db_session.session_scope() as sa:
-        rows = sa.execute(
-            select(Post).where(Post.posted_at >= cutoff)
-        ).scalars().all()
+        rows = sa.execute(select(Post).where(Post.posted_at >= cutoff)).scalars().all()
         post_index: dict[str, int] = {r.twitter_id: r.id for r in rows}
 
     if not post_index:
@@ -45,14 +43,16 @@ async def fetch_recent_metrics(client: TwitterClient, *, max_age_days: int = 30)
             pid = post_index.get(m.tweet_id)
             if pid is None:
                 continue
-            sa.add(Metric(
-                post_id=pid,
-                impressions=m.impressions,
-                likes=m.likes,
-                retweets=m.retweets,
-                replies=m.replies,
-                bookmarks=m.bookmarks,
-            ))
+            sa.add(
+                Metric(
+                    post_id=pid,
+                    impressions=m.impressions,
+                    likes=m.likes,
+                    retweets=m.retweets,
+                    replies=m.replies,
+                    bookmarks=m.bookmarks,
+                )
+            )
             appended += 1
     log.info("wire.metrics.appended", count=appended)
     return appended

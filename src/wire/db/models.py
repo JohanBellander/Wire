@@ -6,7 +6,7 @@ the boundary (Telegram messages, digest); never in the DB.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
@@ -18,7 +18,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -26,7 +25,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 def utc_now() -> datetime:
     """Naive UTC. SQLite stores DateTime without tz info; we treat all
     datetimes in the DB as UTC by convention."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -66,7 +65,9 @@ class Session(Base):
     closed_reason: Mapped[str | None] = mapped_column(String)  # idle | max_hours | immediate
     drafted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
-    events: Mapped[list[Event]] = relationship(back_populates="session", order_by="Event.occurred_at")
+    events: Mapped[list[Event]] = relationship(
+        back_populates="session", order_by="Event.occurred_at"
+    )
     drafts: Mapped[list[Draft]] = relationship(back_populates="session")
 
 
@@ -113,7 +114,9 @@ class Post(Base):
     posted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     draft: Mapped[Draft | None] = relationship(back_populates="post")
-    metrics: Mapped[list[Metric]] = relationship(back_populates="post", order_by="Metric.fetched_at")
+    metrics: Mapped[list[Metric]] = relationship(
+        back_populates="post", order_by="Metric.fetched_at"
+    )
 
 
 class Metric(Base):

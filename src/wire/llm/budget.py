@@ -15,7 +15,7 @@ budget_overrides and return a decision. Telegram-side wiring lives in step 11.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
@@ -84,7 +84,7 @@ def estimate_cost_usd(
 
 def current_month_key(now: datetime | None = None) -> str:
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     return f"{now.year:04d}-{now.month:02d}"
 
 
@@ -129,7 +129,7 @@ def compute_status(
     from wire.db.models import BudgetOverride, LLMCall
 
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     month_start, next_start = _month_bounds(now.replace(tzinfo=None) if now.tzinfo else now)
     month_key = current_month_key(now)
 
@@ -139,8 +139,9 @@ def compute_status(
         .where(LLMCall.called_at < next_start)
     ).scalar_one()
     extension = session.execute(
-        select(func.coalesce(func.sum(BudgetOverride.amount_usd), 0.0))
-        .where(BudgetOverride.effective_month == month_key)
+        select(func.coalesce(func.sum(BudgetOverride.amount_usd), 0.0)).where(
+            BudgetOverride.effective_month == month_key
+        )
     ).scalar_one()
 
     cap = float(base_cap_usd) + float(extension)
@@ -175,7 +176,7 @@ def record_extension(
     )
 
 
-def log_llm_call(resp: "LLMResponse") -> None:
+def log_llm_call(resp: LLMResponse) -> None:
     """Persist one LLMCall row from a provider response. Shared by triage,
     drafting, voice profile, and digest paths so cost tracking captures
     every model call."""
@@ -183,13 +184,15 @@ def log_llm_call(resp: "LLMResponse") -> None:
     from wire.db.models import LLMCall
 
     with db_session.session_scope() as sa:
-        sa.add(LLMCall(
-            task=resp.task,
-            provider=resp.provider,
-            model=resp.model,
-            fallback=resp.fallback_used,
-            input_tokens=resp.input_tokens,
-            output_tokens=resp.output_tokens,
-            cost_usd=resp.cost_usd,
-            latency_ms=resp.latency_ms,
-        ))
+        sa.add(
+            LLMCall(
+                task=resp.task,
+                provider=resp.provider,
+                model=resp.model,
+                fallback=resp.fallback_used,
+                input_tokens=resp.input_tokens,
+                output_tokens=resp.output_tokens,
+                cost_usd=resp.cost_usd,
+                latency_ms=resp.latency_ms,
+            )
+        )

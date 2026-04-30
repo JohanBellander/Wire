@@ -13,10 +13,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from wire.db import session as db_session
-from wire.db.models import Base, Decision, Draft, Post, Session, utc_now
+from wire.db.models import Base, Decision, Draft, Post, utc_now
 from wire.telegram.bot import render_thread_for_telegram
 from wire.telegram.handlers import (
-    _commit_edit,
     _diff_opcodes,
     _on_approve,
     _on_reject_reason,
@@ -37,7 +36,9 @@ def db(tmp_path, monkeypatch):
     db_session.reset_for_tests()
 
 
-def _make_update_with_callback(callback_data: str, user_id: int = 42, chat_id: int = 1) -> MagicMock:
+def _make_update_with_callback(
+    callback_data: str, user_id: int = 42, chat_id: int = 1
+) -> MagicMock:
     update = MagicMock()
     update.callback_query.data = callback_data
     update.callback_query.answer = AsyncMock()
@@ -101,7 +102,9 @@ def test_render_thread_numbers_blocks():
 @pytest.mark.asyncio
 async def test_approve_calls_twitter_and_records(db):
     with db.session_scope() as sa:
-        d = Draft(text="ship it"); sa.add(d); sa.flush()
+        d = Draft(text="ship it")
+        sa.add(d)
+        sa.flush()
         did = d.id
 
     fake_twitter = MagicMock()
@@ -135,7 +138,9 @@ async def test_approve_calls_twitter_and_records(db):
 @pytest.mark.asyncio
 async def test_reject_reason_button_records_decision(db):
     with db.session_scope() as sa:
-        d = Draft(text="boring fix"); sa.add(d); sa.flush()
+        d = Draft(text="boring fix")
+        sa.add(d)
+        sa.flush()
         did = d.id
     update = _make_update_with_callback(f"reject_reason:{did}:boring")
     ctx = _make_context()
@@ -152,7 +157,9 @@ async def test_reject_reason_button_records_decision(db):
 @pytest.mark.asyncio
 async def test_reject_reason_other_enters_state(db):
     with db.session_scope() as sa:
-        d = Draft(text="hmm"); sa.add(d); sa.flush()
+        d = Draft(text="hmm")
+        sa.add(d)
+        sa.flush()
         did = d.id
 
     update = _make_update_with_callback(f"reject_reason:{did}:other", user_id=99)
@@ -180,7 +187,9 @@ async def test_reject_reason_other_enters_state(db):
 @pytest.mark.asyncio
 async def test_edit_flow_records_diff_and_posts(db):
     with db.session_scope() as sa:
-        d = Draft(text="original wording"); sa.add(d); sa.flush()
+        d = Draft(text="original wording")
+        sa.add(d)
+        sa.flush()
         did = d.id
 
     fake_twitter = MagicMock()
@@ -220,7 +229,8 @@ def test_expire_old_saved_drafts(db):
         old.created_at = now - timedelta(hours=48)
         recent = Draft(text="fresh", status="pending")
         recent.created_at = now - timedelta(hours=1)
-        sa.add_all([old, recent]); sa.flush()
+        sa.add_all([old, recent])
+        sa.flush()
         old_id, recent_id = old.id, recent.id
 
     n = expire_old_saved_drafts(max_age_hours=24)

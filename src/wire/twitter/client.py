@@ -19,10 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 import httpx
 import structlog
@@ -124,8 +123,9 @@ class TwitterClient:
 
     # --- core HTTP -----------------------------------------------------------
 
-    async def _request(self, method: str, url: str, *, json_body: dict | None = None,
-                       params: dict | None = None) -> httpx.Response:
+    async def _request(
+        self, method: str, url: str, *, json_body: dict | None = None, params: dict | None = None
+    ) -> httpx.Response:
         client = self._get_http()
         headers = await self._auth_headers()
 
@@ -136,9 +136,13 @@ class TwitterClient:
             reraise=True,
         ):
             with attempt:
-                resp = await client.request(method, url, json=json_body, params=params, headers=headers)
+                resp = await client.request(
+                    method, url, json=json_body, params=params, headers=headers
+                )
                 if resp.status_code in (401, 403):
-                    raise TwitterAuthError(f"Twitter auth failed at {url}: {resp.status_code} {resp.text[:200]}")
+                    raise TwitterAuthError(
+                        f"Twitter auth failed at {url}: {resp.status_code} {resp.text[:200]}"
+                    )
                 if resp.status_code == 429:
                     reset = float(resp.headers.get("x-rate-limit-reset", time.time() + 60))
                     raise TwitterRateLimitError(reset)
@@ -197,7 +201,7 @@ class TwitterClient:
         out: list[TweetMetrics] = []
         # X allows up to 100 ids per call.
         for i in range(0, len(ids), 100):
-            batch = ids[i: i + 100]
+            batch = ids[i : i + 100]
             try:
                 resp = await self._request(
                     "GET",
@@ -216,12 +220,14 @@ class TwitterClient:
             resp.raise_for_status()
             for row in resp.json().get("data", []):
                 pm = row.get("public_metrics") or {}
-                out.append(TweetMetrics(
-                    tweet_id=str(row["id"]),
-                    impressions=pm.get("impression_count"),
-                    likes=pm.get("like_count"),
-                    retweets=pm.get("retweet_count"),
-                    replies=pm.get("reply_count"),
-                    bookmarks=pm.get("bookmark_count"),
-                ))
+                out.append(
+                    TweetMetrics(
+                        tweet_id=str(row["id"]),
+                        impressions=pm.get("impression_count"),
+                        likes=pm.get("like_count"),
+                        retweets=pm.get("retweet_count"),
+                        replies=pm.get("reply_count"),
+                        bookmarks=pm.get("bookmark_count"),
+                    )
+                )
         return out

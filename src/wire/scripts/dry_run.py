@@ -49,9 +49,9 @@ async def _main() -> int:
     print()
     print("=== Kept events (sample) ===")
     with db_session.session_scope() as ss:
-        events = ss.execute(
-            select(Event).order_by(Event.occurred_at.desc()).limit(20)
-        ).scalars().all()
+        events = (
+            ss.execute(select(Event).order_by(Event.occurred_at.desc()).limit(20)).scalars().all()
+        )
         for e in events:
             print(f"  {e.occurred_at}  {e.repo:25s}  {e.event_type:20s}  by {e.actor}")
 

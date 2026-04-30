@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -16,7 +16,7 @@ from wire.ingestion.filters import (
     make_commit_message_filter,
     make_first_run_age_filter,
 )
-from wire.ingestion.github_client import GitHubClient, normalize_raw_event
+from wire.ingestion.github_client import normalize_raw_event
 
 
 def _ev(**kw) -> NormalizedEvent:
@@ -38,7 +38,9 @@ def _ev(**kw) -> NormalizedEvent:
 # ---------- bot filter -------------------------------------------------------
 
 
-@pytest.mark.parametrize("actor", ["dependabot", "dependabot[bot]", "github-actions[bot]", "renovate[bot]"])
+@pytest.mark.parametrize(
+    "actor", ["dependabot", "dependabot[bot]", "github-actions[bot]", "renovate[bot]"]
+)
 def test_bot_actor_dropped(actor):
     d = filter_bot_actor(_ev(actor=actor))
     assert d.keep is False
@@ -122,7 +124,7 @@ def test_first_run_drops_old_events():
 def test_first_run_handles_tz_aware_input():
     now = datetime(2026, 4, 29, 12, 0, 0)
     f = make_first_run_age_filter(max_age_hours=24, now=now)
-    e = _ev(occurred_at=datetime(2026, 4, 27, 0, 0, 0, tzinfo=timezone.utc))
+    e = _ev(occurred_at=datetime(2026, 4, 27, 0, 0, 0, tzinfo=UTC))
     assert f(e).keep is False
 
 
@@ -217,8 +219,13 @@ def test_normalize_push_event():
 
 
 def test_normalize_unknown_event_dropped():
-    raw = {"id": "1", "type": "WatchEvent", "actor": {"login": "x"},
-           "created_at": "2026-04-29T10:00:00Z", "payload": {}}
+    raw = {
+        "id": "1",
+        "type": "WatchEvent",
+        "actor": {"login": "x"},
+        "created_at": "2026-04-29T10:00:00Z",
+        "payload": {},
+    }
     assert normalize_raw_event(raw, repo="winetrackr", default_branch="main", org="me") is None
 
 

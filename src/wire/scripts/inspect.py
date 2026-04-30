@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import desc, func, select
 
@@ -33,34 +33,39 @@ def _format_event_message(e: Event) -> str:
     if e.event_type == "PullRequestEvent":
         pr = raw.get("pull_request") or {}
         title = (pr.get("title") or "(no title)")[:80]
-        return f"#{pr.get('number', '?')} \"{title}\" action={raw.get('action')} merged={pr.get('merged')}"
+        return (
+            f'#{pr.get("number", "?")} "{title}" '
+            f"action={raw.get('action')} merged={pr.get('merged')}"
+        )
     if e.event_type == "ReleaseEvent":
         rel = raw.get("release") or {}
-        return f"{rel.get('tag_name', '')} \"{(rel.get('name') or '')[:60]}\""
+        return f'{rel.get("tag_name", "")} "{(rel.get("name") or "")[:60]}"'
     if e.event_type == "IssuesEvent":
         issue = raw.get("issue") or {}
-        return f"\"{(issue.get('title') or '')[:80]}\" action={raw.get('action')}"
+        return f'"{(issue.get("title") or "")[:80]}" action={raw.get("action")}'
     if e.event_type == "CreateEvent":
-        return f"{raw.get('ref_type', '?')} \"{raw.get('ref', '?')}\""
+        return f'{raw.get("ref_type", "?")} "{raw.get("ref", "?")}"'
     if e.event_type == "DeleteEvent":
-        return f"{raw.get('ref_type', '?')} \"{raw.get('ref', '?')}\""
+        return f'{raw.get("ref_type", "?")} "{raw.get("ref", "?")}"'
     if e.event_type == "IssueCommentEvent":
         issue = raw.get("issue") or {}
-        return f"comment on \"{(issue.get('title') or '')[:60]}\""
+        return f'comment on "{(issue.get("title") or "")[:60]}"'
     return ""
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("hours", nargs="?", type=int, default=24,
-                        help="Window length in hours (default 24)")
-    parser.add_argument("--top", type=int, default=15,
-                        help="Show this many top-scored events (default 15)")
+    parser.add_argument(
+        "hours", nargs="?", type=int, default=24, help="Window length in hours (default 24)"
+    )
+    parser.add_argument(
+        "--top", type=int, default=15, help="Show this many top-scored events (default 15)"
+    )
     args = parser.parse_args()
 
     db_path = os.environ.get("WIRE_DB_PATH", "/data/wire.db")
     db_session.init(db_path)
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=args.hours)
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=args.hours)
 
     print(f"=== Wire activity, last {args.hours}h (since {cutoff.isoformat()} UTC) ===\n")
 
@@ -108,13 +113,17 @@ def main() -> int:
 
         # --- top-scored events ------------------------------------------------
         print(f"Top {args.top} highest-scored events (Wire found these worth considering):")
-        events = s.execute(
-            select(Event)
-            .where(Event.ingested_at >= cutoff)
-            .where(Event.triage_score.is_not(None))
-            .order_by(desc(Event.triage_score))
-            .limit(args.top)
-        ).scalars().all()
+        events = (
+            s.execute(
+                select(Event)
+                .where(Event.ingested_at >= cutoff)
+                .where(Event.triage_score.is_not(None))
+                .order_by(desc(Event.triage_score))
+                .limit(args.top)
+            )
+            .scalars()
+            .all()
+        )
         if not events:
             print("  (none)")
         for e in events:
@@ -122,7 +131,7 @@ def main() -> int:
             msg = _format_event_message(e)
             print(f"  [{score}] {e.repo:22s} {e.event_type:18s} {msg}")
             if e.triage_reason:
-                print(f"         reason: \"{e.triage_reason}\"")
+                print(f'         reason: "{e.triage_reason}"')
         print()
 
         # --- sessions --------------------------------------------------------
@@ -153,10 +162,16 @@ def main() -> int:
         print()
 
         # --- recent draft texts (sample) ------------------------------------
-        recent_drafts = s.execute(
-            select(Draft).where(Draft.created_at >= cutoff)
-            .order_by(desc(Draft.created_at)).limit(5)
-        ).scalars().all()
+        recent_drafts = (
+            s.execute(
+                select(Draft)
+                .where(Draft.created_at >= cutoff)
+                .order_by(desc(Draft.created_at))
+                .limit(5)
+            )
+            .scalars()
+            .all()
+        )
         if recent_drafts:
             print("Recent drafts (most recent first):")
             for d in recent_drafts:
@@ -190,7 +205,9 @@ def main() -> int:
         print("LLM activity:")
         rows = s.execute(
             select(
-                LLMCall.task, LLMCall.provider, LLMCall.model,
+                LLMCall.task,
+                LLMCall.provider,
+                LLMCall.model,
                 func.count(LLMCall.id),
                 func.sum(LLMCall.cost_usd),
                 func.avg(LLMCall.fallback.cast(__import__("sqlalchemy").Float)),

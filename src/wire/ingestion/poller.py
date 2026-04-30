@@ -12,10 +12,9 @@ poller after this insert step.
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
 
 import structlog
 from sqlalchemy import func, select
@@ -115,7 +114,10 @@ async def _enrich_events(client: GitHubClient, repo: str, raw_events: list[dict]
                         full_pr = await client.get_pull_request(repo, int(number))
                     except Exception as e:
                         log.warning(
-                            "wire.enrich.pr_failed", repo=repo, number=number, error=str(e),
+                            "wire.enrich.pr_failed",
+                            repo=repo,
+                            number=number,
+                            error=str(e),
                         )
                         full_pr = None
                     if full_pr is not None:
@@ -196,14 +198,16 @@ def _persist(events: Iterable[NormalizedEvent], existing: set[str]) -> int:
         return 0
     with db_session.session_scope() as s:
         for e in rows:
-            s.add(Event(
-                github_id=e.github_id,
-                repo=e.repo,
-                event_type=e.event_type,
-                actor=e.actor,
-                payload=e.payload or {},
-                occurred_at=e.occurred_at,
-            ))
+            s.add(
+                Event(
+                    github_id=e.github_id,
+                    repo=e.repo,
+                    event_type=e.event_type,
+                    actor=e.actor,
+                    payload=e.payload or {},
+                    occurred_at=e.occurred_at,
+                )
+            )
     return len(rows)
 
 

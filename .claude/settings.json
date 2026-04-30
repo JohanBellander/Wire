@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run ruff check --fix \"$CLAUDE_FILE_PATHS\" 2>/dev/null; uv run ruff format \"$CLAUDE_FILE_PATHS\" 2>/dev/null; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

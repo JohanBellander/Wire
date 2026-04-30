@@ -9,8 +9,7 @@ boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from datetime import datetime, timedelta
 
 import structlog
 from sqlalchemy import desc, func, select
@@ -75,12 +74,19 @@ def gather_numbers(cfg: WireConfig, *, now: datetime | None = None) -> DigestNum
         approval = (approved / decided_total) if decided_total else 0.0
 
         # top + bottom performers among settled posts
-        settled_posts = sa.execute(
-            select(Post).where(Post.posted_at <= settle_cutoff).order_by(desc(Post.posted_at)).limit(60)
-        ).scalars().all()
+        settled_posts = (
+            sa.execute(
+                select(Post)
+                .where(Post.posted_at <= settle_cutoff)
+                .order_by(desc(Post.posted_at))
+                .limit(60)
+            )
+            .scalars()
+            .all()
+        )
         with_metric = [(p, _last_metric_for(sa, p.id)) for p in settled_posts]
         with_metric_filtered = [t for t in with_metric if t[1] is not None]
-        with_metric_filtered.sort(key=lambda t: (t[1].impressions or 0), reverse=True)
+        with_metric_filtered.sort(key=lambda t: t[1].impressions or 0, reverse=True)
 
         top = with_metric_filtered[:3]
         impressions_sorted = sorted(t[1].impressions or 0 for t in with_metric_filtered)
@@ -130,7 +136,7 @@ def format_digest(n: DigestNumbers) -> str:
             impr = m.impressions if m else None
             likes = m.likes if m else None
             snip = (p.text or "")[:80].replace("\n", " ")
-            lines.append(f"{i}. \"{snip}…\" ({impr or 0} impr, {likes or 0} ❤️)")
+            lines.append(f'{i}. "{snip}…" ({impr or 0} impr, {likes or 0} ❤️)')
         lines.append("")
     if n.below_median:
         lines.append("Below median:")
@@ -138,7 +144,7 @@ def format_digest(n: DigestNumbers) -> str:
             impr = m.impressions if m else None
             likes = m.likes if m else None
             snip = (p.text or "")[:80].replace("\n", " ")
-            lines.append(f"{i}. \"{snip}…\" ({impr or 0} impr, {likes or 0} ❤️)")
+            lines.append(f'{i}. "{snip}…" ({impr or 0} impr, {likes or 0} ❤️)')
         lines.append("")
     spend_pct = (n.spend_usd / n.cap_usd * 100) if n.cap_usd else 0.0
     lines.append("LLM usage:")

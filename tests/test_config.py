@@ -9,14 +9,12 @@ import pytest
 
 from wire.config import (
     ConfigError,
-    LLMConfig,
     QuietHoursConfig,
     ReposFile,
     WireConfig,
     load_config,
     load_repos,
 )
-
 
 VALID_CONFIG = textwrap.dedent("""
 github:

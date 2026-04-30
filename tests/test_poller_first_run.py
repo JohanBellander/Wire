@@ -47,7 +47,10 @@ def test_marking_idempotent(db):
     # Only one row in bot_state
     with db.session_scope() as s:
         from sqlalchemy import select
-        rows = s.execute(
-            select(BotState).where(BotState.key == _FIRST_RUN_KEY_PREFIX + "winetrackr")
-        ).scalars().all()
+
+        rows = (
+            s.execute(select(BotState).where(BotState.key == _FIRST_RUN_KEY_PREFIX + "winetrackr"))
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1

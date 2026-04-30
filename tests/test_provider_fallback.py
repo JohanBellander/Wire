@@ -13,7 +13,6 @@ Mocks both providers; no real API calls. Covers:
 from __future__ import annotations
 
 import json
-from datetime import time as dt_time
 
 import httpx
 import pytest
@@ -21,20 +20,8 @@ from pydantic import BaseModel
 
 from wire.config import (
     ClaudeModelsConfig,
-    DigestConfig,
-    GithubConfig,
-    IngestionConfig,
-    LearningConfig,
     LLMConfig,
-    LoggingConfig,
-    MetricsConfig,
     OllamaConfig,
-    QuietHoursConfig,
-    ReposLocation,
-    SessionConfig,
-    TelegramConfig,
-    TwitterConfig,
-    WireConfig,
 )
 from wire.llm.budget import estimate_cost_usd
 from wire.llm.provider import (
@@ -116,7 +103,9 @@ async def test_ollama_timeout_falls_back_to_claude(respx_mock):
         side_effect=httpx.ReadTimeout("ollama timed out")
     )
     ollama = OllamaProvider(cfg)
-    fake_claude = _StubClaude(cfg, content=json.dumps({"text": "claude saved you", "confidence": 0.7}))
+    fake_claude = _StubClaude(
+        cfg, content=json.dumps({"text": "claude saved you", "confidence": 0.7})
+    )
     fb = FallbackProvider(primary=ollama, fallback=fake_claude)
     try:
         resp = await fb.complete(
@@ -153,7 +142,9 @@ async def test_ollama_invalid_json_falls_back(respx_mock):
     fb = FallbackProvider(primary=ollama, fallback=fake_claude)
     try:
         resp = await fb.complete(
-            "drafting", "system", [{"role": "user", "content": "x"}],
+            "drafting",
+            "system",
+            [{"role": "user", "content": "x"}],
             response_format=_Schema,
         )
     finally:
@@ -173,7 +164,9 @@ async def test_ollama_http_500_falls_back(respx_mock):
     fb = FallbackProvider(primary=ollama, fallback=fake_claude)
     try:
         resp = await fb.complete(
-            "drafting", "system", [{"role": "user", "content": "x"}],
+            "drafting",
+            "system",
+            [{"role": "user", "content": "x"}],
             response_format=_Schema,
         )
     finally:
@@ -194,7 +187,9 @@ async def test_ollama_auth_error_does_not_fall_back(respx_mock):
     try:
         with pytest.raises(LLMAuthError):
             await fb.complete(
-                "drafting", "system", [{"role": "user", "content": "x"}],
+                "drafting",
+                "system",
+                [{"role": "user", "content": "x"}],
                 response_format=_Schema,
             )
     finally:
@@ -221,7 +216,9 @@ async def test_ollama_schema_mismatch_falls_back(respx_mock):
     fb = FallbackProvider(primary=ollama, fallback=fake_claude)
     try:
         resp = await fb.complete(
-            "drafting", "system", [{"role": "user", "content": "x"}],
+            "drafting",
+            "system",
+            [{"role": "user", "content": "x"}],
             response_format=_Schema,
         )
     finally:
@@ -242,7 +239,9 @@ async def test_claude_only_provider_skips_ollama_entirely():
     fb_or_claude = build_provider(cfg, claude=fake_claude)
     assert isinstance(fb_or_claude, _StubClaude)
     resp = await fb_or_claude.complete(
-        "drafting", "system", [{"role": "user", "content": "x"}],
+        "drafting",
+        "system",
+        [{"role": "user", "content": "x"}],
         response_format=_Schema,
     )
     assert resp.provider == "claude"
@@ -319,6 +318,7 @@ def test_parse_json_handles_array():
 
 def test_parse_json_raises_on_unrecoverable():
     import json as _json
+
     with pytest.raises(_json.JSONDecodeError):
         parse_json_lenient("this is plain prose with no json at all")
 
@@ -339,12 +339,18 @@ class _StubClaude(ClaudeProvider):
         self.last_task: str | None = None
 
     async def complete(  # type: ignore[override]
-        self, task, system, messages, response_format=None, max_tokens=1500,
+        self,
+        task,
+        system,
+        messages,
+        response_format=None,
+        max_tokens=1500,
     ) -> LLMResponse:
         self.calls += 1
         self.last_task = task
         # Run the same validator that the real provider runs.
         from wire.llm.provider import _validate_output
+
         _validate_output(self._content, response_format)
         return LLMResponse(
             content=self._content,

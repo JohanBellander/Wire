@@ -14,8 +14,7 @@ Commands:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from datetime import datetime, timedelta
 
 import structlog
 from sqlalchemy import select
@@ -24,7 +23,7 @@ from telegram.ext import ContextTypes
 
 from wire.config import ReposFile, WireConfig
 from wire.db import session as db_session
-from wire.db.models import BotState, Draft, Post, utc_now
+from wire.db.models import BotState, Draft, utc_now
 from wire.health import get_state as get_health_state
 from wire.llm.budget import compute_status, record_extension
 
@@ -160,16 +159,20 @@ async def saved_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update, context):
         return
     with db_session.session_scope() as sa:
-        rows = sa.execute(
-            select(Draft).where(Draft.status == "pending").order_by(Draft.created_at.desc())
-        ).scalars().all()
+        rows = (
+            sa.execute(
+                select(Draft).where(Draft.status == "pending").order_by(Draft.created_at.desc())
+            )
+            .scalars()
+            .all()
+        )
     if not rows:
         await _reply(update, "No saved drafts.")
         return
     lines = ["💤 Saved drafts:"]
     for d in rows[:30]:
         snippet = (d.text or "")[:80].replace("\n", " ")
-        lines.append(f"#{d.id} {d.created_at.date()}  \"{snippet}\"")
+        lines.append(f'#{d.id} {d.created_at.date()}  "{snippet}"')
     await _reply(update, "\n".join(lines))
 
 

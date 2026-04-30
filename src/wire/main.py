@@ -12,7 +12,7 @@ import logging
 import os
 import signal
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -24,7 +24,7 @@ from wire import __version__
 from wire.config import ConfigError, WireConfig, load_config, load_repos
 from wire.db import session as db_session
 from wire.drafting.drafter import draft_pending_sessions
-from wire.health import set_last_ingestion_at, set_queue_size, set_status, start_health_server
+from wire.health import set_last_ingestion_at, set_queue_size, start_health_server
 from wire.ingestion.poller import ingest_all
 from wire.ingestion.triage import triage_pending_events
 from wire.llm.alerts import evaluate_alert
@@ -64,8 +64,11 @@ def configure_logging() -> None:
 def load_validated_config(path: Path) -> WireConfig | None:
     if not path.exists():
         if os.environ.get("WIRE_DEV") == "1":
-            log.warning("wire.config.missing_dev_mode", path=str(path),
-                        hint="continuing without config (WIRE_DEV=1)")
+            log.warning(
+                "wire.config.missing_dev_mode",
+                path=str(path),
+                hint="continuing without config (WIRE_DEV=1)",
+            )
             return None
         log.error("wire.config.missing", path=str(path))
         raise ConfigError(
@@ -120,7 +123,7 @@ class _Jobs:
 
     async def run_poll_cycle(self) -> None:
         try:
-            stats = await ingest_all(self.cfg, self.repos)
+            await ingest_all(self.cfg, self.repos)
         except Exception:
             log.exception("wire.poll.ingest_failed")
             return
@@ -134,6 +137,7 @@ class _Jobs:
         try:
             cfg_d = detector_config_from(self.cfg)
             from wire.sessions.detector import assign_sessions_for_repo
+
             for r in self.repos.repos:
                 assign_sessions_for_repo(r.name, cfg_d)
             close_idle_sessions(cfg_d)
@@ -150,12 +154,20 @@ class _Jobs:
             log.exception("wire.poll.draft_failed")
 
         # Update health snapshot
-        from datetime import datetime, timezone
-        set_last_ingestion_at(datetime.now(timezone.utc))
+        from datetime import datetime
+
+        set_last_ingestion_at(datetime.now(UTC))
         from sqlalchemy import func, select
+
         from wire.db.models import Draft
+
         with db_session.session_scope() as sa:
-            n = sa.execute(select(func.count(Draft.id)).where(Draft.status == "pending")).scalar_one() or 0
+            n = (
+                sa.execute(
+                    select(func.count(Draft.id)).where(Draft.status == "pending")
+                ).scalar_one()
+                or 0
+            )
         set_queue_size(int(n))
 
     async def run_alert_check(self) -> None:
@@ -178,6 +190,7 @@ class _Jobs:
     async def run_digest(self) -> None:
         try:
             from wire.digest.builder import DigestBuilder
+
             text = await DigestBuilder(self.cfg).build_text()
             chat_id = self.telegram_app.bot_data["wire_chat_id"]
             await self.telegram_app.bot.send_message(chat_id=chat_id, text=text)
@@ -230,6 +243,7 @@ async def run() -> None:
     try:
         from alembic import command
         from alembic.config import Config as AlembicConfig
+
         cfg_path = Path(__file__).resolve().parents[2] / "alembic.ini"
         if cfg_path.exists():
             ac = AlembicConfig(str(cfg_path))
@@ -245,6 +259,7 @@ async def run() -> None:
     twitter_client = None
     if config.twitter.access_token_path.exists():
         from wire.twitter.client import TwitterClient
+
         twitter_client = TwitterClient(
             client_id=os.environ.get(config.twitter.client_id_env, ""),
             client_secret=os.environ.get(config.twitter.client_secret_env, ""),
@@ -282,7 +297,9 @@ async def run() -> None:
     )
     sched.add_job(
         jobs.run_metrics,
-        CronTrigger.from_crontab(config.metrics.fetch_cron, timezone=str(config.quiet_hours.timezone)),
+        CronTrigger.from_crontab(
+            config.metrics.fetch_cron, timezone=str(config.quiet_hours.timezone)
+        ),
         id="metrics",
     )
     sched.add_job(
@@ -293,8 +310,7 @@ async def run() -> None:
     # Voice profile: weekly, Sunday 04:00 local
     sched.add_job(
         jobs.run_voice,
-        CronTrigger(day_of_week="sun", hour=4, minute=0,
-                    timezone=str(config.quiet_hours.timezone)),
+        CronTrigger(day_of_week="sun", hour=4, minute=0, timezone=str(config.quiet_hours.timezone)),
         id="voice",
     )
     sched.add_job(jobs.run_expire_saved, IntervalTrigger(hours=1), id="expire_saved")
@@ -303,6 +319,7 @@ async def run() -> None:
 
     # Wire the digest builder into Telegram so /digest works.
     from wire.digest.builder import DigestBuilder
+
     telegram_app.bot_data["wire_digest_builder"] = DigestBuilder(config)
 
     # Run-once on boot: send any drafts still pending without a telegram message

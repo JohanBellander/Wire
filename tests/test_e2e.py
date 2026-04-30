@@ -9,54 +9,82 @@ Goal: prove the wiring between modules works for a realistic-shaped flow.
 
 from __future__ import annotations
 
-import asyncio
-import json
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from wire.config import (
-    ClaudeModelsConfig, DigestConfig, GithubConfig, IngestionConfig,
-    LearningConfig, LLMConfig, LoggingConfig, MetricsConfig, OllamaConfig,
-    QuietHoursConfig, RepoEntry, ReposFile, ReposLocation, SessionConfig,
-    TelegramConfig, TwitterConfig, WireConfig,
+    ClaudeModelsConfig,
+    DigestConfig,
+    GithubConfig,
+    IngestionConfig,
+    LearningConfig,
+    LLMConfig,
+    LoggingConfig,
+    MetricsConfig,
+    OllamaConfig,
+    QuietHoursConfig,
+    RepoEntry,
+    ReposFile,
+    ReposLocation,
+    SessionConfig,
+    TelegramConfig,
+    TwitterConfig,
+    WireConfig,
 )
 from wire.db import session as db_session
 from wire.db.models import (
-    Base, Decision, Draft, Event, LLMCall, Post, Session, VoiceProfile, utc_now,
+    Base,
+    Draft,
+    Event,
+    LLMCall,
+    Session,
 )
 from wire.drafting.drafter import (
-    DraftItem, DraftResponse, draft_pending_sessions,
+    DraftItem,
+    DraftResponse,
+    draft_pending_sessions,
 )
 from wire.ingestion.filters import NormalizedEvent, apply_all, build_default_chain
 from wire.llm.provider import LLMResponse
 from wire.sessions.detector import (
-    DetectorConfig, assign_sessions_for_repo, close_idle_sessions,
+    DetectorConfig,
+    assign_sessions_for_repo,
+    close_idle_sessions,
 )
 
 
 def _config() -> WireConfig:
     return WireConfig(
-        github=GithubConfig(org="me", app_id=1, installation_id=1,
-                            private_key_path="/d/k.pem", poll_interval_minutes=20),
+        github=GithubConfig(
+            org="me",
+            app_id=1,
+            installation_id=1,
+            private_key_path="/d/k.pem",
+            poll_interval_minutes=20,
+        ),
         repos=ReposLocation(config_path="/d/r.yaml"),
         llm=LLMConfig(
             provider="claude",
             ollama=OllamaConfig(base_url="http://x", model="m", timeout_seconds=10),
             claude=ClaudeModelsConfig(
-                drafting="claude-sonnet-4-6", triage="claude-haiku-4-5",
-                voice_profile="claude-haiku-4-5", digest="claude-haiku-4-5",
+                drafting="claude-sonnet-4-6",
+                triage="claude-haiku-4-5",
+                voice_profile="claude-haiku-4-5",
+                digest="claude-haiku-4-5",
             ),
-            prompt_caching=True, monthly_budget_usd=10, budget_alert_threshold=0.8,
+            prompt_caching=True,
+            monthly_budget_usd=10,
+            budget_alert_threshold=0.8,
         ),
         # Use a window that does NOT include "now" so quiet-hours doesn't defer.
         quiet_hours=QuietHoursConfig(start="03:00", end="04:00", timezone="UTC"),
         session=SessionConfig(idle_minutes=30, max_hours=4, immediate_trigger_events=["release"]),
         telegram=TelegramConfig(bot_token_env="X", chat_id_env="Y"),
-        twitter=TwitterConfig(client_id_env="C", client_secret_env="S",
-                              access_token_path="/d/t.json"),
+        twitter=TwitterConfig(
+            client_id_env="C", client_secret_env="S", access_token_path="/d/t.json"
+        ),
         metrics=MetricsConfig(fetch_cron="0 9 * * *", posts_settle_days=7),
         digest=DigestConfig(cron="0 9 * * 1"),
         learning=LearningConfig(recent_decisions_n=20, recent_posts_n=30),
@@ -66,10 +94,13 @@ def _config() -> WireConfig:
 
 
 def _repos() -> ReposFile:
-    return ReposFile(repos=[
-        RepoEntry(name="winetrackr", visibility="public",
-                  notes="Public side project, post freely"),
-    ])
+    return ReposFile(
+        repos=[
+            RepoEntry(
+                name="winetrackr", visibility="public", notes="Public side project, post freely"
+            ),
+        ]
+    )
 
 
 @pytest.fixture
@@ -93,8 +124,14 @@ class _StubProvider:
         self.calls: list[dict] = []
 
     async def complete(self, task, system, messages, response_format=None, max_tokens=1500):
-        self.calls.append({"task": task, "system": system, "messages": messages,
-                           "response_format": response_format})
+        self.calls.append(
+            {
+                "task": task,
+                "system": system,
+                "messages": messages,
+                "response_format": response_format,
+            }
+        )
         return LLMResponse(
             content=self._payload,
             provider="claude",
@@ -131,9 +168,11 @@ async def test_full_path_events_to_telegram(db, monkeypatch):
             default_branch="main",
             branch="main",
             commit_messages=["feat: add price-history graph"],
-            payload={"raw_payload": {"commits": [
-                {"sha": "abc", "message": "feat: add price-history graph"}
-            ]}},
+            payload={
+                "raw_payload": {
+                    "commits": [{"sha": "abc", "message": "feat: add price-history graph"}]
+                }
+            },
         ),
         NormalizedEvent(
             github_id="ev-2",
@@ -144,9 +183,16 @@ async def test_full_path_events_to_telegram(db, monkeypatch):
             default_branch="main",
             branch=None,
             pr_merged=True,
-            payload={"raw_payload": {"action": "closed", "pull_request": {
-                "merged": True, "title": "Add price-history graph", "html_url": "x",
-            }}},
+            payload={
+                "raw_payload": {
+                    "action": "closed",
+                    "pull_request": {
+                        "merged": True,
+                        "title": "Add price-history graph",
+                        "html_url": "x",
+                    },
+                }
+            },
         ),
         # A bot push and a chore push — should be filtered out
         NormalizedEvent(
@@ -199,25 +245,34 @@ async def test_full_path_events_to_telegram(db, monkeypatch):
 
     with db.session_scope() as sa:
         for n in res.kept:
-            sa.add(Event(
-                github_id=n.github_id, repo=n.repo, event_type=n.event_type,
-                actor=n.actor, payload=n.payload or {},
-                occurred_at=n.occurred_at,
-                triage_score=0.7,  # pretend triage already scored these
-                triage_reason="real feature work",
-            ))
+            sa.add(
+                Event(
+                    github_id=n.github_id,
+                    repo=n.repo,
+                    event_type=n.event_type,
+                    actor=n.actor,
+                    payload=n.payload or {},
+                    occurred_at=n.occurred_at,
+                    triage_score=0.7,  # pretend triage already scored these
+                    triage_reason="real feature work",
+                )
+            )
 
     # 2. Run session detection.
-    n_assigned = assign_sessions_for_repo("winetrackr", DetectorConfig(
-        idle_minutes=30, max_hours=4, immediate_trigger_events=frozenset({"release"})
-    ))
+    n_assigned = assign_sessions_for_repo(
+        "winetrackr",
+        DetectorConfig(
+            idle_minutes=30, max_hours=4, immediate_trigger_events=frozenset({"release"})
+        ),
+    )
     assert n_assigned == 2
 
     # Force-close so drafting picks them up.
     later = base + timedelta(hours=2)
     close_idle_sessions(
-        DetectorConfig(idle_minutes=30, max_hours=4,
-                       immediate_trigger_events=frozenset({"release"})),
+        DetectorConfig(
+            idle_minutes=30, max_hours=4, immediate_trigger_events=frozenset({"release"})
+        ),
         now=later,
     )
     with db.session_scope() as sa:
@@ -229,11 +284,17 @@ async def test_full_path_events_to_telegram(db, monkeypatch):
     # 3. Run drafter with a stub provider that returns a single draft.
     canned = DraftResponse(
         skip_reason=None,
-        drafts=[DraftItem(
-            text="Just shipped a price-history graph in winetrackr — turns out querying historical prices in chunks is way faster than one big window function.",
-            reasoning="Concrete feature shipped + a small technical insight.",
-            confidence=0.78,
-        )],
+        drafts=[
+            DraftItem(
+                text=(
+                    "Just shipped a price-history graph in winetrackr — turns out "
+                    "querying historical prices in chunks is way faster than one big "
+                    "window function."
+                ),
+                reasoning="Concrete feature shipped + a small technical insight.",
+                confidence=0.78,
+            )
+        ],
     )
     stub = _StubProvider(canned)
     # now=base (not in quiet hours UTC 03-04)
@@ -285,21 +346,49 @@ async def test_full_path_skip_below_threshold_no_llm_call(db, monkeypatch):
     repos = _repos()
     base = datetime(2026, 4, 29, 12, 0, 0)
     with db.session_scope() as sa:
-        s = Session(repo="winetrackr", started_at=base, ended_at=base + timedelta(minutes=10),
-                    closed_reason="idle")
-        sa.add(s); sa.flush()
-        sa.add_all([
-            Event(github_id="a", repo="winetrackr", event_type="PushEvent",
-                  payload={}, occurred_at=base, session_id=s.id, triage_score=0.1,
-                  triage_reason="boring"),
-            Event(github_id="b", repo="winetrackr", event_type="PushEvent",
-                  payload={}, occurred_at=base + timedelta(minutes=5),
-                  session_id=s.id, triage_score=0.2, triage_reason="version bump"),
-        ])
+        s = Session(
+            repo="winetrackr",
+            started_at=base,
+            ended_at=base + timedelta(minutes=10),
+            closed_reason="idle",
+        )
+        sa.add(s)
+        sa.flush()
+        sa.add_all(
+            [
+                Event(
+                    github_id="a",
+                    repo="winetrackr",
+                    event_type="PushEvent",
+                    payload={},
+                    occurred_at=base,
+                    session_id=s.id,
+                    triage_score=0.1,
+                    triage_reason="boring",
+                ),
+                Event(
+                    github_id="b",
+                    repo="winetrackr",
+                    event_type="PushEvent",
+                    payload={},
+                    occurred_at=base + timedelta(minutes=5),
+                    session_id=s.id,
+                    triage_score=0.2,
+                    triage_reason="version bump",
+                ),
+            ]
+        )
 
-    canned = DraftResponse(skip_reason=None, drafts=[DraftItem(
-        text="x", reasoning="y", confidence=0.5,
-    )])
+    canned = DraftResponse(
+        skip_reason=None,
+        drafts=[
+            DraftItem(
+                text="x",
+                reasoning="y",
+                confidence=0.5,
+            )
+        ],
+    )
     stub = _StubProvider(canned)
     results = await draft_pending_sessions(cfg, repos, stub, now=base)
     assert len(results) == 1

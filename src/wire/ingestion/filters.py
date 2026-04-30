@@ -8,19 +8,21 @@ chains them; the first reject_reason short-circuits.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from datetime import UTC, datetime, timedelta
 
 # Bot actors we never want to post about.
-BOT_ACTORS: frozenset[str] = frozenset({
-    "dependabot",
-    "dependabot[bot]",
-    "github-actions[bot]",
-    "renovate[bot]",
-    "renovate-bot",
-    "imgbot[bot]",
-})
+BOT_ACTORS: frozenset[str] = frozenset(
+    {
+        "dependabot",
+        "dependabot[bot]",
+        "github-actions[bot]",
+        "renovate[bot]",
+        "renovate-bot",
+        "imgbot[bot]",
+    }
+)
 
 
 @dataclass
@@ -50,12 +52,12 @@ class NormalizedEvent:
 def _ts(d: datetime) -> datetime:
     """Coerce to a naive-UTC datetime so subtractions never blow up on tz mix."""
     if d.tzinfo is not None:
-        return d.astimezone(timezone.utc).replace(tzinfo=None)
+        return d.astimezone(UTC).replace(tzinfo=None)
     return d
 
 
 def _utc_now_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def filter_bot_actor(e: NormalizedEvent) -> FilterDecision:
@@ -89,7 +91,9 @@ def make_commit_message_filter(patterns: Iterable[str]):
             return FilterDecision(True)
         all_skipped = all(any(p.match(m or "") for p in compiled) for m in e.commit_messages)
         if all_skipped:
-            return FilterDecision(False, f"all {len(e.commit_messages)} commits match skip patterns")
+            return FilterDecision(
+                False, f"all {len(e.commit_messages)} commits match skip patterns"
+            )
         return FilterDecision(True)
 
     return f
@@ -157,11 +161,11 @@ def build_default_chain(
 ):
     """Build the standard filter chain in spec order:
 
-       1. allowlist (belt + suspenders)
-       2. bot actors
-       3. non-default branch (push only)
-       4. conventional-commit chore/ci/docs (push only, ALL commits)
-       5. first-run 24h cutoff (only if first_run=True)
+    1. allowlist (belt + suspenders)
+    2. bot actors
+    3. non-default branch (push only)
+    4. conventional-commit chore/ci/docs (push only, ALL commits)
+    5. first-run 24h cutoff (only if first_run=True)
     """
     chain: list = [
         filter_repo_allowlist(allowlist),

@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 authors = [
     { name = "Johan Bellander" },
 ]
-license = { text = "Proprietary" }
+license = { text = "Apache-2.0" }
 dependencies = [
     "python-telegram-bot[ext]>=21,<22",
     "anthropic>=0.40",
@@ -35,6 +35,9 @@ dev = [
     "freezegun>=1.5",
     "respx>=0.21",
     "ruff>=0.6",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    "detect-secrets>=1.5",
 ]
 
 [build-system]
@@ -54,3 +57,16 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["wire"]
+check_untyped_defs = true
+ignore_missing_imports = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+check_untyped_defs = false

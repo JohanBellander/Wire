@@ -15,8 +15,6 @@ import os
 import sys
 from pathlib import Path
 
-import httpx
-
 from wire.config import load_config
 from wire.db import session as db_session
 from wire.llm.provider import build_provider
@@ -40,7 +38,8 @@ async def _fetch_recent_tweets(client: TwitterClient, *, max_n: int = 100) -> li
             params["pagination_token"] = next_token
         resp = await http.get(
             f"https://api.twitter.com/2/users/{user_id}/tweets",
-            params=params, headers=headers,
+            params=params,
+            headers=headers,
         )
         resp.raise_for_status()
         body = resp.json()

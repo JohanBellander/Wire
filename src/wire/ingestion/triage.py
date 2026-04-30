@@ -6,7 +6,6 @@ clarification, this is a per-event call, not batched.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -109,9 +108,11 @@ async def triage_event(event: Event, provider: LLMProvider) -> TriageResult:
 async def triage_pending_events(provider: LLMProvider) -> int:
     """Score every event with triage_score IS NULL. Returns the count scored."""
     with db_session.session_scope() as sa:
-        rows = list(sa.execute(
-            select(Event).where(Event.triage_score.is_(None)).order_by(Event.occurred_at.asc())
-        ).scalars())
+        rows = list(
+            sa.execute(
+                select(Event).where(Event.triage_score.is_(None)).order_by(Event.occurred_at.asc())
+            ).scalars()
+        )
 
     scored = 0
     for e in rows:

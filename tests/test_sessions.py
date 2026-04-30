@@ -34,8 +34,13 @@ def db(tmp_path, monkeypatch):
     db_session.reset_for_tests()
 
 
-def _add_events(db, repo: str, ts_offsets_minutes: list[int], event_type: str = "PushEvent",
-                base: datetime = datetime(2026, 4, 29, 10, 0, 0)) -> list[int]:
+def _add_events(
+    db,
+    repo: str,
+    ts_offsets_minutes: list[int],
+    event_type: str = "PushEvent",
+    base: datetime = datetime(2026, 4, 29, 10, 0, 0),
+) -> list[int]:
     ids: list[int] = []
     with db.session_scope() as sa:
         for i, off in enumerate(ts_offsets_minutes):
@@ -87,9 +92,8 @@ def test_close_idle_sessions_sweeps_open(db):
 
 
 def test_max_hours_close(db):
-    # Five events spaced 60 minutes apart with idle=30 → all join the session
-    # because each gap is *exactly* 60min > 30min idle. So they DON'T join.
-    # Use 25-minute gaps so each event extends the session, with max_hours=2 → forces close after 120min
+    # 25-minute gaps so each event extends the session, with max_hours=2 →
+    # the session forces a close after 120min total duration.
     _add_events(db, "winetrackr", [0, 25, 50, 75, 100, 125, 150])
     assign_sessions_for_repo("winetrackr", _cfg(idle=30, max_h=2))
     with db.session_scope() as sa:
