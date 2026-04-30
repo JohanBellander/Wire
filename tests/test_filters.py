@@ -16,7 +16,7 @@ from wire.ingestion.filters import (
     make_commit_message_filter,
     make_first_run_age_filter,
 )
-from wire.ingestion.github_client import normalize_raw_event
+from wire.ingestion.github_client import GitHubClient, normalize_raw_event
 
 
 def _ev(**kw) -> NormalizedEvent:

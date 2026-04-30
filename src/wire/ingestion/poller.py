@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 
 from wire.config import ReposFile, WireConfig
 from wire.db import session as db_session
-from wire.db.models import Event
+from wire.db.models import BotState, Event, utc_now
 from wire.ingestion.filters import NormalizedEvent, apply_all, build_default_chain
 from wire.ingestion.github_client import GitHubClient, normalize_raw_event
 
@@ -50,10 +50,22 @@ def _existing_github_ids(repo: str) -> set[str]:
     return set(rows)
 
 
+_FIRST_RUN_KEY_PREFIX = "ingest_completed:"
+
+
 def _is_first_run_for(repo: str) -> bool:
+    """First run = we've never completed an ingestion cycle for this repo. Tracked
+    via bot_state so a repo with no recent activity (everything dropped by the
+    24h cutoff) doesn't get stuck re-applying the cutoff forever."""
     with db_session.session_scope() as s:
-        n = s.execute(select(func.count()).select_from(Event).where(Event.repo == repo)).scalar()
-    return (n or 0) == 0
+        return s.get(BotState, _FIRST_RUN_KEY_PREFIX + repo) is None
+
+
+def _mark_first_run_done(repo: str) -> None:
+    key = _FIRST_RUN_KEY_PREFIX + repo
+    with db_session.session_scope() as s:
+        if s.get(BotState, key) is None:
+            s.add(BotState(key=key, value=utc_now().isoformat()))
 
 
 async def ingest_repo(
@@ -90,6 +102,10 @@ async def ingest_repo(
         drop_counts[bucket] = drop_counts.get(bucket, 0) + 1
 
     inserted = _persist(res.kept, existing=_existing_github_ids(repo))
+
+    # Whether or not anything was inserted, this poll completed — flip the
+    # first-run flag so the next poll skips the 24h cutoff.
+    _mark_first_run_done(repo)
 
     log_.info(
         "wire.ingestion.done",

@@ -166,9 +166,11 @@ class GitHubClient:
 
     # --- public fetch methods -------------------------------------------------
 
-    async def list_events(self, repo: str, *, since: datetime | None = None, max_pages: int = 5) -> list[dict]:
-        """List events from /repos/{owner}/{repo}/events. Pages until older than `since`
-        or max_pages reached. Returns events newest-first.
+    async def list_events(self, repo: str, *, since: datetime | None = None, max_pages: int = 3) -> list[dict]:
+        """List events from /repos/{owner}/{repo}/events. Pages until `since`
+        is reached, max_pages exhausted, or GitHub returns 422 (the events API
+        hard-caps total return at ~300 events / 3 pages of per_page=100, regardless
+        of how far back you ask). Returns events newest-first.
         """
         cutoff = since
         out: list[dict] = []
@@ -177,6 +179,16 @@ class GitHubClient:
             resp = await self._get(url, params={"per_page": 100, "page": page})
             if resp.status_code == 404:
                 log.warning("wire.github.repo_not_found", repo=f"{self.org}/{repo}")
+                return out
+            if resp.status_code == 422:
+                # The events API caps total at ~300; past page 3 it returns 422.
+                # Treat as natural end-of-pagination, not an error.
+                log.info(
+                    "wire.github.pagination_cap_reached",
+                    repo=f"{self.org}/{repo}",
+                    page=page,
+                    collected=len(out),
+                )
                 return out
             resp.raise_for_status()
             batch = resp.json()
