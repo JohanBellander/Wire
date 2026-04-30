@@ -1,0 +1,155 @@
+"""GitHub ingestion poller.
+
+Runs every `poll_interval_minutes`. For each allowlisted repo:
+  1. Fetch events since max(occurred_at) for that repo (or last 24h on first run).
+  2. Normalize raw payloads into NormalizedEvents.
+  3. Run the filter chain.
+  4. Insert survivors into `events` (UNIQUE on github_id handles dedup).
+
+Triage scoring (per-event Haiku call) lives in step 6 and is invoked by the
+poller after this insert step.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Iterable
+
+import structlog
+from sqlalchemy import func, select
+
+from wire.config import ReposFile, WireConfig
+from wire.db import session as db_session
+from wire.db.models import Event
+from wire.ingestion.filters import NormalizedEvent, apply_all, build_default_chain
+from wire.ingestion.github_client import GitHubClient, normalize_raw_event
+
+log = structlog.get_logger()
+
+
+@dataclass
+class IngestStats:
+    repo: str
+    fetched: int
+    kept: int
+    dropped: int
+    inserted: int
+    drop_reasons: dict[str, int]
+
+
+def _last_event_at_for(repo: str) -> datetime | None:
+    with db_session.session_scope() as s:
+        return s.execute(select(func.max(Event.occurred_at)).where(Event.repo == repo)).scalar()
+
+
+def _existing_github_ids(repo: str) -> set[str]:
+    with db_session.session_scope() as s:
+        rows = s.execute(select(Event.github_id).where(Event.repo == repo)).scalars().all()
+    return set(rows)
+
+
+def _is_first_run_for(repo: str) -> bool:
+    with db_session.session_scope() as s:
+        n = s.execute(select(func.count()).select_from(Event).where(Event.repo == repo)).scalar()
+    return (n or 0) == 0
+
+
+async def ingest_repo(
+    client: GitHubClient,
+    repo: str,
+    config: WireConfig,
+    repos_file: ReposFile,
+) -> IngestStats:
+    log_ = log.bind(repo=repo)
+    last_at = _last_event_at_for(repo)
+    first_run = last_at is None
+    log_.info("wire.ingestion.start", first_run=first_run, since=str(last_at))
+
+    default_branch = await client.get_default_branch(repo)
+    raw = await client.list_events(repo, since=last_at)
+
+    normalized: list[NormalizedEvent] = []
+    for r in raw:
+        n = normalize_raw_event(r, repo=repo, default_branch=default_branch, org=client.org)
+        if n is not None:
+            normalized.append(n)
+
+    chain = build_default_chain(
+        allowlist=repos_file.names(),
+        skip_commit_patterns=config.ingestion.skip_commit_patterns,
+        first_run=first_run,
+        first_run_max_age_hours=config.ingestion.first_run_max_age_hours,
+    )
+    res = apply_all(normalized, chain)
+
+    drop_counts: dict[str, int] = {}
+    for _, reason in res.dropped:
+        bucket = reason.split(":")[0]
+        drop_counts[bucket] = drop_counts.get(bucket, 0) + 1
+
+    inserted = _persist(res.kept, existing=_existing_github_ids(repo))
+
+    log_.info(
+        "wire.ingestion.done",
+        fetched=len(raw),
+        normalized=len(normalized),
+        kept=len(res.kept),
+        dropped=len(res.dropped),
+        inserted=inserted,
+        drop_reasons=drop_counts,
+    )
+    return IngestStats(
+        repo=repo,
+        fetched=len(raw),
+        kept=len(res.kept),
+        dropped=len(res.dropped),
+        inserted=inserted,
+        drop_reasons=drop_counts,
+    )
+
+
+def _persist(events: Iterable[NormalizedEvent], existing: set[str]) -> int:
+    """Insert kept events; skip ones whose github_id is already in events.
+    UNIQUE constraint backs us up but we filter first to avoid IntegrityError
+    noise in the logs."""
+    rows = [e for e in events if e.github_id not in existing]
+    if not rows:
+        return 0
+    with db_session.session_scope() as s:
+        for e in rows:
+            s.add(Event(
+                github_id=e.github_id,
+                repo=e.repo,
+                event_type=e.event_type,
+                actor=e.actor,
+                payload=e.payload or {},
+                occurred_at=e.occurred_at,
+            ))
+    return len(rows)
+
+
+async def ingest_all(config: WireConfig, repos_file: ReposFile) -> list[IngestStats]:
+    """Ingest all allowlisted repos, sequentially (rate-limit friendly).
+
+    Sequential is fine for ≤ a few dozen repos at a 20-minute cadence. Bumping
+    to a small concurrency cap is a one-line change if needed.
+    """
+    client = GitHubClient.from_files(
+        app_id=config.github.app_id,
+        installation_id=config.github.installation_id,
+        private_key_path=config.github.private_key_path,
+        org=config.github.org,
+    )
+    try:
+        stats = []
+        for repo_entry in repos_file.repos:
+            try:
+                s = await ingest_repo(client, repo_entry.name, config, repos_file)
+                stats.append(s)
+            except Exception as e:
+                log.exception("wire.ingestion.repo_failed", repo=repo_entry.name, error=str(e))
+        return stats
+    finally:
+        await client.aclose()

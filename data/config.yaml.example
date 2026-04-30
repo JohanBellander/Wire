@@ -1,0 +1,64 @@
+# config.yaml — placeholder values, copy to config.yaml and fill in for real use.
+# See SPEC.MD §4 for the canonical schema.
+
+github:
+  org: "your-org-name"
+  app_id: 123456                  # GitHub App ID
+  installation_id: 789012         # Installation ID for the org
+  private_key_path: /data/secrets/github-app.pem
+  poll_interval_minutes: 20
+
+repos:
+  config_path: /data/repos.yaml
+
+llm:
+  provider: claude                # claude | ollama
+  ollama:
+    base_url: http://192.168.1.50:11434
+    model: qwen2.5:7b-instruct
+    timeout_seconds: 90
+  claude:
+    # Used directly when provider=claude, OR as fallback when provider=ollama
+    drafting: claude-sonnet-4-6
+    triage: claude-haiku-4-5
+    voice_profile: claude-haiku-4-5
+    digest: claude-haiku-4-5
+  prompt_caching: true
+  monthly_budget_usd: 10
+  budget_alert_threshold: 0.8     # alert at 80%
+
+session:
+  idle_minutes: 30                # session ends after 30 min of quiet
+  max_hours: 4                    # force session boundary at 4h
+  immediate_trigger_events:       # bypass session-clustering
+    - release
+    - milestone
+
+quiet_hours:
+  start: "22:00"
+  end: "07:00"
+  timezone: "Europe/Stockholm"
+
+telegram:
+  bot_token_env: TELEGRAM_BOT_TOKEN
+  chat_id_env: TELEGRAM_CHAT_ID
+
+twitter:
+  client_id_env: TWITTER_CLIENT_ID
+  client_secret_env: TWITTER_CLIENT_SECRET
+  access_token_path: /data/secrets/twitter-token.json
+
+metrics:
+  fetch_cron: "0 9 * * *"         # daily 09:00 Stockholm
+  posts_settle_days: 7            # only treat ≥7-day-old posts as performance signal
+
+digest:
+  cron: "0 9 * * 1"               # Monday 09:00 Stockholm
+
+learning:
+  recent_decisions_n: 20          # decisions injected as few-shot
+  recent_posts_n: 30              # posts with metrics injected as voice/perf context
+
+logging:
+  level: INFO
+  format: json

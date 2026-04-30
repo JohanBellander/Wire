@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# uv
+uv.lock.bak
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Wire runtime artifacts (data volume contents)
+.env
+data/wire.db
+data/wire.db-journal
+data/wire.db-shm
+data/wire.db-wal
+data/config.yaml
+data/repos.yaml
+data/secrets/
+
+# Tracked: data/config.yaml.example, data/repos.yaml.example

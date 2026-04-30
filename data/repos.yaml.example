@@ -1,0 +1,16 @@
+# repos.yaml — hand-edited allowlist. Repos NOT listed here are ignored entirely
+# at the ingestion layer. Visma/work repos are excluded by being absent.
+# See SPEC.MD §5.
+
+repos:
+  - name: winetrackr
+    visibility: public
+    notes: "Public side project, post freely about features and debugging"
+
+  - name: medianalyzer
+    visibility: public
+    notes: "Public, but boring infra commits — only post on releases or breakthroughs"
+
+  - name: home-server-config
+    visibility: private
+    notes: "Personal infra, OK to post about lessons learned (not secrets)"
