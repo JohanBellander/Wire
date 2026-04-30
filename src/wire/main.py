@@ -12,7 +12,7 @@ import logging
 import os
 import signal
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import structlog
@@ -269,6 +269,10 @@ async def run() -> None:
         id="poll",
         max_instances=1,
         coalesce=True,
+        # Fire on boot too, so /status populates within a minute of startup
+        # instead of waiting a full poll interval. APScheduler's default
+        # next_run is now+interval, which is unhelpful for fresh containers.
+        next_run_time=datetime.now(),
     )
     sched.add_job(
         jobs.run_alert_check,
