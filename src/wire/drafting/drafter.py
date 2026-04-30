@@ -40,7 +40,7 @@ from wire.db.models import (
 )
 from wire.llm.alerts import is_drafting_blocked_by_budget
 from wire.llm.caching import text_block
-from wire.llm.provider import LLMError, LLMProvider, LLMResponse
+from wire.llm.provider import LLMError, LLMProvider, LLMResponse, parse_json_lenient
 
 log = structlog.get_logger()
 
@@ -384,7 +384,7 @@ async def draft_pending_sessions(
         _log_llm_call(resp)
 
         try:
-            parsed = DraftResponse.model_validate(json.loads(resp.content))
+            parsed = DraftResponse.model_validate(parse_json_lenient(resp.content))
         except Exception as e:
             log.warning("wire.drafting.bad_output", session_id=sid, error=str(e))
             continue

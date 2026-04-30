@@ -44,6 +44,7 @@ from wire.llm.provider import (
     LLMResponse,
     OllamaProvider,
     build_provider,
+    parse_json_lenient,
 )
 
 
@@ -280,6 +281,46 @@ def test_estimate_cost_unknown_model_returns_zero():
     assert estimate_cost_usd("ollama-qwen", 1000, 500) == 0.0
     # haiku family fallback works
     assert estimate_cost_usd("claude-haiku-4-5", 1000, 500) > 0
+
+
+# ---------- parse_json_lenient ----------------------------------------------
+
+
+def test_parse_json_clean():
+    assert parse_json_lenient('{"a": 1}') == {"a": 1}
+
+
+def test_parse_json_strips_markdown_fences():
+    payload = '```json\n{"a": 1, "b": "hi"}\n```'
+    assert parse_json_lenient(payload) == {"a": 1, "b": "hi"}
+
+
+def test_parse_json_strips_bare_fences():
+    payload = '```\n{"a": 1}\n```'
+    assert parse_json_lenient(payload) == {"a": 1}
+
+
+def test_parse_json_extracts_from_prose():
+    """Claude sometimes prefixes 'Here is the JSON:' or similar."""
+    payload = 'Here is the response:\n{"profile_text": "lowercase, terse"}'
+    result = parse_json_lenient(payload)
+    assert result == {"profile_text": "lowercase, terse"}
+
+
+def test_parse_json_extracts_with_trailing_prose():
+    payload = '{"a": 1}\n\nThat\'s your JSON.'
+    assert parse_json_lenient(payload) == {"a": 1}
+
+
+def test_parse_json_handles_array():
+    payload = '```json\n[{"x": 1}, {"x": 2}]\n```'
+    assert parse_json_lenient(payload) == [{"x": 1}, {"x": 2}]
+
+
+def test_parse_json_raises_on_unrecoverable():
+    import json as _json
+    with pytest.raises(_json.JSONDecodeError):
+        parse_json_lenient("this is plain prose with no json at all")
 
 
 # ---------- Stub Claude provider for tests -----------------------------------

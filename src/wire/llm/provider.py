@@ -87,6 +87,46 @@ class LLMAuthError(LLMError):
 # --- helpers ------------------------------------------------------------------
 
 
+def parse_json_lenient(s: str) -> Any:
+    """Parse JSON tolerantly. Handles three common LLM output quirks:
+
+      1. Markdown code fences: ```json\\n{...}\\n```
+      2. Leading/trailing prose: "Here is the JSON: { ... }"
+      3. Trailing prose after a valid object closes.
+
+    Falls back to extracting the first balanced {...} or [...] span if direct
+    parse fails. Raises json.JSONDecodeError if no recoverable JSON is found.
+    """
+    text = s.strip()
+
+    # Strip markdown code fences (```json ... ``` or ``` ... ```)
+    if text.startswith("```"):
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1:]
+        text = text.rstrip()
+        if text.endswith("```"):
+            text = text[:-3].rstrip()
+
+    # Try the simple case first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Fall back: extract the first balanced top-level {...} or [...]
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = text.find(opener)
+        end = text.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                continue
+
+    raise json.JSONDecodeError("no recoverable JSON in response", text or "", 0)
+
+
 def _validate_output(output: str, response_format: type[BaseModel] | None) -> None:
     """Raises LLMSchemaError if output is empty / too short / unparseable /
     fails schema validation. Otherwise returns silently."""
@@ -95,7 +135,7 @@ def _validate_output(output: str, response_format: type[BaseModel] | None) -> No
     if response_format is None:
         return
     try:
-        parsed = json.loads(output)
+        parsed = parse_json_lenient(output)
     except json.JSONDecodeError as e:
         raise LLMSchemaError(f"response was not valid JSON: {e}") from e
     try:

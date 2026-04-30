@@ -19,7 +19,7 @@ from sqlalchemy import desc, select
 from wire.config import WireConfig
 from wire.db import session as db_session
 from wire.db.models import LLMCall, Post, VoiceProfile, utc_now
-from wire.llm.provider import LLMError, LLMProvider, LLMResponse
+from wire.llm.provider import LLMError, LLMProvider, LLMResponse, parse_json_lenient
 
 log = structlog.get_logger()
 
@@ -77,7 +77,7 @@ async def regenerate_voice_profile(
         return None
 
     _log_call(resp)
-    parsed = _VoiceResponse.model_validate(json.loads(resp.content))
+    parsed = _VoiceResponse.model_validate(parse_json_lenient(resp.content))
     with db_session.session_scope() as sa:
         sa.add(VoiceProfile(profile_text=parsed.profile_text))
     log.info("wire.voice.regenerated", words=len(parsed.profile_text.split()))

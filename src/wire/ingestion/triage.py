@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from wire.db import session as db_session
 from wire.db.models import Event, LLMCall
-from wire.llm.provider import LLMError, LLMProvider
+from wire.llm.provider import LLMError, LLMProvider, parse_json_lenient
 
 log = structlog.get_logger()
 
@@ -81,7 +81,7 @@ async def triage_event(event: Event, provider: LLMProvider) -> TriageResult:
         response_format=TriageResponse,
         max_tokens=120,
     )
-    parsed = TriageResponse.model_validate(json.loads(resp.content))
+    parsed = TriageResponse.model_validate(parse_json_lenient(resp.content))
     return TriageResult(
         event_id=event.id,
         score=parsed.score,
