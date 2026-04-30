@@ -35,7 +35,7 @@ dev = [
     "freezegun>=1.5",
     "respx>=0.21",
     "ruff>=0.6",
-    "mypy>=1.13",
+    "mypy>=1.20.2",
     "pre-commit>=4.0",
     "detect-secrets>=1.5",
 ]
