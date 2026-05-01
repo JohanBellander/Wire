@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import time as dt_time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -32,6 +32,14 @@ class OllamaConfig(BaseModel):
     base_url: str
     model: str
     timeout_seconds: int = Field(ge=1, le=600)
+    # Empirical defaults from Helmsman's qwen2.5:7b experiments — the
+    # combination drops structured-output refusal rate from ~40% to ~0%.
+    # Override per-deploy in config.yaml if you've tuned for a different model.
+    temperature: float = Field(default=0.5, ge=0.0, le=2.0)
+    think: bool = True
+    # Escape hatch for top_p, top_k, seed, repeat_penalty, etc. without code
+    # changes. Values flow into the Ollama `options` dict on every call.
+    extra_options: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("base_url")
     @classmethod

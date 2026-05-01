@@ -25,7 +25,7 @@ from wire.config import ReposFile, WireConfig
 from wire.db import session as db_session
 from wire.db.models import BotState, Draft, utc_now
 from wire.health import get_state as get_health_state
-from wire.llm.budget import compute_status, record_extension
+from wire.llm.budget import compute_fallback_stats, compute_status, record_extension
 
 log = structlog.get_logger()
 
@@ -94,6 +94,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     with db_session.session_scope() as sa:
         spend = compute_status(sa, cfg.llm.monthly_budget_usd, cfg.llm.budget_alert_threshold)
+        fb = compute_fallback_stats(sa, hours=24)
 
     text = (
         "🤖 wire status\n"
@@ -101,9 +102,37 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"last_ingestion_at: {health.last_ingestion_at or 'never'}\n"
         f"pending drafts: {health.queue_size}\n"
         f"paused: {pause_line}\n"
-        f"month spend: ${spend.spend_usd:.2f} / ${spend.cap_usd:.2f} ({spend.pct * 100:.1f}%)"
+        f"month spend: ${spend.spend_usd:.2f} / ${spend.cap_usd:.2f} ({spend.pct * 100:.1f}%)\n"
+        "\n"
+        f"{_format_brain(cfg, health, fb)}"
     )
     await _reply(update, text)
+
+
+def _format_brain(cfg: WireConfig, health, fb) -> str:
+    """Render the LLM-backend status block for /status. Shape mirrors
+    Helmsman's: primary, fallback, last used, fallback rate over the window."""
+    if cfg.llm.provider == "claude":
+        primary_label = f"claude (drafting={cfg.llm.claude.drafting})"
+        return f"🧠 brain\nprimary:  {primary_label}\nfallback: (none — claude only)"
+    # provider == ollama → fallback to claude
+    primary_label = f"ollama ({cfg.llm.ollama.model})"
+    fallback_label = f"claude ({cfg.llm.claude.drafting} / {cfg.llm.claude.triage})"
+    last_used = health.last_used_provider or "(no calls yet)"
+    rate_pct = fb.fallback_rate * 100
+    rate_line = (
+        f"fallback rate ({fb.window_hours}h): "
+        f"{rate_pct:.0f}% ({fb.fallback_count} / {fb.total_calls})"
+        if fb.total_calls > 0
+        else f"fallback rate ({fb.window_hours}h): no LLM calls yet"
+    )
+    return (
+        "🧠 brain\n"
+        f"primary:  {primary_label}\n"
+        f"fallback: {fallback_label}\n"
+        f"last used: {last_used}\n"
+        f"{rate_line}"
+    )
 
 
 async def budget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

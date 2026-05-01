@@ -29,7 +29,12 @@ from wire.llm.alerts import (
     evaluate_alert,
     is_drafting_blocked_by_budget,
 )
-from wire.llm.budget import compute_status, current_month_key, record_extension
+from wire.llm.budget import (
+    compute_fallback_stats,
+    compute_status,
+    current_month_key,
+    record_extension,
+)
 
 
 def _config(cap=10.0, threshold=0.8) -> WireConfig:
@@ -184,3 +189,64 @@ def test_current_month_key_format():
     assert k == "2026-04"
     k = current_month_key(datetime(2026, 12, 31, tzinfo=UTC))
     assert k == "2026-12"
+
+
+# ---------- compute_fallback_stats ----------
+
+
+def _add_llm_call(db, *, fallback: bool, when: datetime | None = None, provider: str = "claude"):
+    when = when or utc_now()
+    with db.session_scope() as sa:
+        sa.add(
+            LLMCall(
+                task="drafting",
+                provider=provider,
+                model="claude-sonnet-4-6" if provider == "claude" else None,
+                fallback=fallback,
+                input_tokens=100,
+                output_tokens=50,
+                cost_usd=0.001,
+                latency_ms=100,
+                called_at=when,
+            )
+        )
+
+
+def test_fallback_stats_empty_window(db):
+    with db.session_scope() as sa:
+        s = compute_fallback_stats(sa)
+    assert s.total_calls == 0
+    assert s.fallback_count == 0
+    assert s.fallback_rate == 0.0
+    assert s.window_hours == 24
+
+
+def test_fallback_stats_counts_correctly(db):
+    """Mix of recent + old + fallback + non-fallback calls."""
+    now = utc_now()
+    # Recent (within 24h)
+    _add_llm_call(db, fallback=False, when=now - timedelta(hours=1), provider="ollama")
+    _add_llm_call(db, fallback=False, when=now - timedelta(hours=5), provider="ollama")
+    _add_llm_call(db, fallback=True, when=now - timedelta(hours=2), provider="claude")
+    _add_llm_call(db, fallback=True, when=now - timedelta(hours=10), provider="claude")
+    # Outside the window
+    _add_llm_call(db, fallback=True, when=now - timedelta(hours=48), provider="claude")
+    _add_llm_call(db, fallback=False, when=now - timedelta(days=3), provider="ollama")
+
+    with db.session_scope() as sa:
+        s = compute_fallback_stats(sa, hours=24)
+    assert s.total_calls == 4
+    assert s.fallback_count == 2
+    assert abs(s.fallback_rate - 0.5) < 1e-9
+
+
+def test_fallback_stats_custom_window(db):
+    now = utc_now()
+    _add_llm_call(db, fallback=False, when=now - timedelta(hours=1))
+    _add_llm_call(db, fallback=True, when=now - timedelta(hours=8))
+    _add_llm_call(db, fallback=False, when=now - timedelta(hours=20))
+    with db.session_scope() as sa:
+        s_3h = compute_fallback_stats(sa, hours=3)
+        s_24h = compute_fallback_stats(sa, hours=24)
+    assert s_3h.total_calls == 1
+    assert s_24h.total_calls == 3

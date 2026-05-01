@@ -292,14 +292,30 @@ class OllamaProvider:
         for m in messages:
             ollama_messages.append({"role": m["role"], "content": _content_to_text(m["content"])})
 
+        # Build the options dict: Wire's per-call max_tokens, plus the
+        # config's temperature, plus any extra_options the user has set
+        # (top_p, seed, etc.). User extras override defaults.
+        options: dict[str, Any] = {
+            "num_predict": max_tokens,
+            "temperature": self._cfg.temperature,
+        }
+        options.update(self._cfg.extra_options)
+
         body: dict[str, Any] = {
             "model": self._cfg.model,
             "messages": ollama_messages,
             "stream": False,
-            "options": {"num_predict": max_tokens},
+            "think": self._cfg.think,
+            "options": options,
         }
         if response_format is not None:
-            body["format"] = "json"
+            # Pass the full JSON Schema (newer Ollama feature). Forces the
+            # model into the exact pydantic shape — significantly more
+            # reliable than `format="json"` for mid-size models.
+            try:
+                body["format"] = response_format.model_json_schema()
+            except Exception:  # noqa: BLE001 — defensive fallback
+                body["format"] = "json"
 
         client = self._get_client()
         t0 = time.perf_counter()
@@ -404,6 +420,31 @@ class FallbackProvider:
 
 
 # --- factory ------------------------------------------------------------------
+
+
+async def probe_ollama(config: LLMConfig, *, timeout_seconds: float = 5.0) -> tuple[bool, str]:
+    """Soft reachability probe for the configured Ollama host. Used at boot
+    to surface obvious misconfiguration in the logs without blocking startup.
+
+    Returns (reachable, detail). `detail` is the model count on success, or
+    a short error string on failure. Never raises — `FallbackProvider`
+    handles real runtime failures."""
+    base = config.ollama.base_url
+    url = f"{base}/api/tags"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return False, f"HTTP {resp.status_code}"
+        data = resp.json()
+        models = data.get("models", []) if isinstance(data, dict) else []
+        return True, f"{len(models)} models available"
+    except httpx.TimeoutException:
+        return False, f"timeout after {timeout_seconds}s"
+    except httpx.TransportError as e:
+        return False, f"transport error: {e}"
+    except Exception as e:  # noqa: BLE001 — defensive
+        return False, f"{type(e).__name__}: {e}"
 
 
 def build_provider(

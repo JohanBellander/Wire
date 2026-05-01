@@ -143,6 +143,68 @@ Never in code, never in git. `.gitignore` covers `.env`, `data/config.yaml`, `da
 
 Never substitute `claude-sonnet-4-6` etc. Model routing in `LLMConfig.claude` (drafting / triage / voice_profile / digest). Per-task routing applies when `provider: claude` AND in the fallback path when `provider: ollama`.
 
+## Ollama tuning (when `provider: ollama`)
+
+Wire's structured-JSON outputs (`DraftResponse`, `TriageResponse`, etc.) are
+sensitive to model behavior. Helmsman discovered empirically (PRs #3 + #4)
+that mid-size open models default to refusal a lot. The **production-tuned
+defaults** that drop qwen2.5:7b refusal rate from ~40% to ~0%:
+
+```yaml
+llm:
+  provider: ollama
+  ollama:
+    base_url: http://192.168.1.50:11434
+    model: qwen2.5:7b-instruct
+    timeout_seconds: 90
+    temperature: 0.5      # baked-in default; lower = more reliable schemas
+    think: true           # baked-in default; required for qwen reliability
+```
+
+These are pydantic-defaulted in `OllamaConfig`, so a deploy that doesn't
+explicitly set them gets the proven values. Override via config.yaml if
+you've tuned for a different model.
+
+### Reliability ladder
+
+When debugging "why is Wire falling back to Claude every call?":
+
+1. **Schema format mode** — Wire passes the full pydantic JSON schema as
+   `format` to `/api/chat`, not just `"json"`. This forces the model into
+   the exact structure rather than generating arbitrary JSON. Most
+   reliable; on by default whenever `response_format` is provided.
+2. **`think=True`** — extended thinking. Without it, qwen-class models
+   text-reply refusals at high rates. Top-level field on the request body.
+3. **`temperature=0.5`** — empirically the sweet spot. <0.3 hurts voice
+   variation; >0.7 hurts schema adherence on dense schemas.
+4. **`extra_options` escape hatch** — pass `top_p`, `seed`, `top_k`,
+   `repeat_penalty`, etc. via config.yaml without touching code.
+
+### Observability
+
+`/status` in Telegram has a 🧠 brain block: primary backend, fallback,
+which one was used last, and the 24h fallback rate (counts from
+`llm_calls.fallback`). When `provider: claude`, the block collapses to
+"claude only".
+
+The `wire.ollama.unreachable_warning` log line at startup means the
+configured Ollama host didn't respond to `GET /api/tags` within 5s.
+Container starts anyway; `FallbackProvider` routes everything to Claude
+at runtime until Ollama recovers.
+
+### When tuning fails — fall back to Claude
+
+If switching to Ollama causes drafts to dry up or the fallback rate
+shoots to 100%:
+
+1. Lower temperature in `config.yaml` to `0.3`.
+2. Verify `think: true` is set (default, but check after `pre-commit`
+   trims have happened).
+3. If still failing, your model may not support the `think` parameter.
+   Try a known-good model: `qwen2.5:7b-instruct` is what Helmsman tested.
+4. Last resort: switch back to `provider: claude` while you debug. Cost
+   goes up but drafts arrive.
+
 ## Common pitfalls (the day-one bugs, preserved here so they don't repeat)
 
 - **APScheduler `IntervalTrigger` doesn't fire on boot.** Default first-fire is `now+interval`, not `now`. Pass `next_run_time=datetime.now()` to `add_job` so freshly-booted containers populate `last_ingestion_at` immediately. See `main.py`.

@@ -17,6 +17,16 @@ llm:
     base_url: http://192.168.1.50:11434
     model: qwen2.5:7b-instruct
     timeout_seconds: 90
+    # Helmsman empirically found qwen2.5:7b refuses structured output ~40%
+    # of the time at defaults. think=True + temperature=0.5 fixes it.
+    # Lower temperature for more reliable schema adherence; raise for variation.
+    temperature: 0.5
+    think: true
+    # extra_options lets you pass any other Ollama option (top_p, seed, ...)
+    # without code changes:
+    # extra_options:
+    #   top_p: 0.95
+    #   seed: 42
   claude:
     # Used directly when provider=claude, OR as fallback when provider=ollama
     drafting: claude-sonnet-4-6

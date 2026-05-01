@@ -15,7 +15,7 @@ budget_overrides and return a decision. Telegram-side wiring lives in step 11.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
@@ -156,6 +156,55 @@ def compute_status(
         warning=pct >= alert_threshold and pct < 1.0,
         month=month_key,
     )
+
+
+@dataclass
+class FallbackStats:
+    """Backend-fallback observability over a rolling window."""
+
+    total_calls: int
+    fallback_count: int
+    window_hours: int
+
+    @property
+    def fallback_rate(self) -> float:
+        if self.total_calls == 0:
+            return 0.0
+        return self.fallback_count / self.total_calls
+
+
+def compute_fallback_stats(
+    session: SASession,
+    *,
+    hours: int = 24,
+    now: datetime | None = None,
+) -> FallbackStats:
+    """Count LLM calls and fallback events in the last `hours` hours.
+
+    Used by `/status` Brain block. Reads `llm_calls.fallback` (already
+    populated by every caller of `provider.complete()` via `log_llm_call`).
+    """
+    from wire.db.models import LLMCall
+
+    if now is None:
+        now = datetime.now(UTC).replace(tzinfo=None)
+    cutoff = now - timedelta(hours=hours)
+
+    total = (
+        session.execute(
+            select(func.count(LLMCall.id)).where(LLMCall.called_at >= cutoff)
+        ).scalar_one()
+        or 0
+    )
+    fb = (
+        session.execute(
+            select(func.count(LLMCall.id))
+            .where(LLMCall.called_at >= cutoff)
+            .where(LLMCall.fallback.is_(True))
+        ).scalar_one()
+        or 0
+    )
+    return FallbackStats(total_calls=int(total), fallback_count=int(fb), window_hours=hours)
 
 
 def record_extension(

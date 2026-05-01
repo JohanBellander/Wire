@@ -24,7 +24,12 @@ from wire import __version__
 from wire.config import ConfigError, WireConfig, load_config, load_repos
 from wire.db import session as db_session
 from wire.drafting.drafter import draft_pending_sessions
-from wire.health import set_last_ingestion_at, set_queue_size, start_health_server
+from wire.health import (
+    set_last_ingestion_at,
+    set_last_used_provider,
+    set_queue_size,
+    start_health_server,
+)
 from wire.ingestion.poller import ingest_all
 from wire.ingestion.triage import triage_pending_events
 from wire.llm.alerts import evaluate_alert
@@ -157,9 +162,9 @@ class _Jobs:
         from datetime import datetime
 
         set_last_ingestion_at(datetime.now(UTC))
-        from sqlalchemy import func, select
+        from sqlalchemy import desc, func, select
 
-        from wire.db.models import Draft
+        from wire.db.models import Draft, LLMCall
 
         with db_session.session_scope() as sa:
             n = (
@@ -168,7 +173,14 @@ class _Jobs:
                 ).scalar_one()
                 or 0
             )
+            # Refresh last_used_provider from the most recent LLM call so
+            # /status reflects which backend actually answered last.
+            last_provider = sa.execute(
+                select(LLMCall.provider).order_by(desc(LLMCall.called_at)).limit(1)
+            ).scalar_one_or_none()
         set_queue_size(int(n))
+        if last_provider is not None:
+            set_last_used_provider(last_provider)
 
     async def run_alert_check(self) -> None:
         try:
@@ -274,6 +286,23 @@ async def run() -> None:
 
     repos = load_repos(config.repos.config_path)
     provider = build_provider(config.llm)
+
+    # If Ollama is the primary, soft-probe its reachability now so the logs
+    # surface obvious misconfiguration. Don't FATAL — FallbackProvider
+    # handles real runtime failures.
+    if config.llm.provider == "ollama":
+        from wire.llm.provider import probe_ollama
+
+        reachable, detail = await probe_ollama(config.llm)
+        if reachable:
+            log.info("wire.ollama.reachable", base_url=config.llm.ollama.base_url, detail=detail)
+        else:
+            log.warning(
+                "wire.ollama.unreachable_warning",
+                base_url=config.llm.ollama.base_url,
+                detail=detail,
+                hint="FallbackProvider will route to Claude until Ollama recovers.",
+            )
 
     # Optional Twitter (skip if no token yet)
     twitter_client = None

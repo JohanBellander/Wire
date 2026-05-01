@@ -32,6 +32,7 @@ from wire.llm.provider import (
     OllamaProvider,
     build_provider,
     parse_json_lenient,
+    probe_ollama,
 )
 
 
@@ -227,6 +228,174 @@ async def test_ollama_schema_mismatch_falls_back(respx_mock):
     assert resp.fallback_used is True
 
 
+# ---------- Sampling params + JSON schema (Helmsman tuning) ------------------
+
+
+@pytest.mark.asyncio
+async def test_ollama_passes_temperature_and_think(respx_mock):
+    """Verify the request body includes temperature and think — the empirical
+    fix that drops qwen2.5:7b refusal rate from ~40% to ~0%."""
+    cfg = _llm_cfg("ollama")
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "message": {"content": json.dumps({"text": "hello world", "confidence": 0.9})},
+                "prompt_eval_count": 10,
+                "eval_count": 5,
+            },
+        )
+
+    respx_mock.post("http://ollama.test:11434/api/chat").mock(side_effect=handler)
+    ollama = OllamaProvider(cfg)
+    try:
+        await ollama.complete(
+            "drafting",
+            "system",
+            [{"role": "user", "content": "x"}],
+            response_format=_Schema,
+        )
+    finally:
+        await ollama.aclose()
+
+    assert len(captured) == 1
+    body = captured[0]
+    assert body["think"] is True
+    assert body["options"]["temperature"] == 0.5
+    assert body["options"]["num_predict"] == 1500  # default max_tokens
+
+
+@pytest.mark.asyncio
+async def test_ollama_uses_json_schema_when_response_format_provided(respx_mock):
+    """Wire passes the full pydantic JSON schema as `format` — forces the
+    model output into the exact structure rather than just 'some JSON'."""
+    cfg = _llm_cfg("ollama")
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "message": {"content": json.dumps({"text": "ok hello world", "confidence": 0.9})},
+                "prompt_eval_count": 10,
+                "eval_count": 5,
+            },
+        )
+
+    respx_mock.post("http://ollama.test:11434/api/chat").mock(side_effect=handler)
+    ollama = OllamaProvider(cfg)
+    try:
+        await ollama.complete(
+            "drafting",
+            "system",
+            [{"role": "user", "content": "x"}],
+            response_format=_Schema,
+        )
+    finally:
+        await ollama.aclose()
+
+    body = captured[0]
+    fmt = body["format"]
+    # JSON Schema is a dict (not the string "json")
+    assert isinstance(fmt, dict)
+    assert fmt.get("type") == "object"
+    # Schema reflects _Schema's fields
+    assert "text" in fmt.get("properties", {})
+    assert "confidence" in fmt.get("properties", {})
+
+
+@pytest.mark.asyncio
+async def test_ollama_no_format_when_no_response_format(respx_mock):
+    """Without a pydantic schema, no format constraint is sent."""
+    cfg = _llm_cfg("ollama")
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "message": {"content": "a long enough freeform response without any json"},
+                "prompt_eval_count": 10,
+                "eval_count": 5,
+            },
+        )
+
+    respx_mock.post("http://ollama.test:11434/api/chat").mock(side_effect=handler)
+    ollama = OllamaProvider(cfg)
+    try:
+        await ollama.complete(
+            "drafting",
+            "system",
+            [{"role": "user", "content": "x"}],
+        )
+    finally:
+        await ollama.aclose()
+    assert "format" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_ollama_extra_options_merged(respx_mock):
+    """User-set extra_options flow through and override built-in keys."""
+    from wire.config import ClaudeModelsConfig, LLMConfig, OllamaConfig
+
+    cfg = LLMConfig(
+        provider="ollama",
+        ollama=OllamaConfig(
+            base_url="http://ollama.test:11434",
+            model="qwen2.5:7b-instruct",
+            timeout_seconds=10,
+            temperature=0.7,
+            think=False,
+            extra_options={"top_p": 0.95, "seed": 42, "temperature": 0.3},
+        ),
+        claude=ClaudeModelsConfig(
+            drafting="claude-sonnet-4-6",
+            triage="claude-haiku-4-5",
+            voice_profile="claude-haiku-4-5",
+            digest="claude-haiku-4-5",
+        ),
+        prompt_caching=True,
+        monthly_budget_usd=10.0,
+        budget_alert_threshold=0.8,
+    )
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "message": {"content": json.dumps({"text": "ok response", "confidence": 0.9})},
+                "prompt_eval_count": 10,
+                "eval_count": 5,
+            },
+        )
+
+    respx_mock.post("http://ollama.test:11434/api/chat").mock(side_effect=handler)
+    ollama = OllamaProvider(cfg)
+    try:
+        await ollama.complete(
+            "drafting",
+            "system",
+            [{"role": "user", "content": "x"}],
+            response_format=_Schema,
+        )
+    finally:
+        await ollama.aclose()
+
+    body = captured[0]
+    assert body["think"] is False
+    # extra_options overrode the default temperature (0.7 → 0.3)
+    assert body["options"]["temperature"] == 0.3
+    assert body["options"]["top_p"] == 0.95
+    assert body["options"]["seed"] == 42
+
+
 # ---------- Claude-only path -------------------------------------------------
 
 
@@ -247,6 +416,53 @@ async def test_claude_only_provider_skips_ollama_entirely():
     assert resp.provider == "claude"
     assert resp.fallback_used is False
     assert fake_claude.calls == 1
+
+
+# ---------- probe_ollama (soft startup probe) -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_probe_ollama_returns_true_on_200(respx_mock):
+    cfg = _llm_cfg("ollama")
+    respx_mock.get("http://ollama.test:11434/api/tags").mock(
+        return_value=httpx.Response(200, json={"models": [{"name": "qwen"}, {"name": "llama"}]})
+    )
+    reachable, detail = await probe_ollama(cfg)
+    assert reachable is True
+    assert "2 models" in detail
+
+
+@pytest.mark.asyncio
+async def test_probe_ollama_returns_false_on_timeout(respx_mock):
+    cfg = _llm_cfg("ollama")
+    respx_mock.get("http://ollama.test:11434/api/tags").mock(
+        side_effect=httpx.ReadTimeout("slow ollama")
+    )
+    reachable, detail = await probe_ollama(cfg, timeout_seconds=0.1)
+    assert reachable is False
+    assert "timeout" in detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_probe_ollama_returns_false_on_5xx(respx_mock):
+    cfg = _llm_cfg("ollama")
+    respx_mock.get("http://ollama.test:11434/api/tags").mock(
+        return_value=httpx.Response(503, text="service unavailable")
+    )
+    reachable, detail = await probe_ollama(cfg)
+    assert reachable is False
+    assert "503" in detail
+
+
+@pytest.mark.asyncio
+async def test_probe_ollama_returns_false_on_transport_error(respx_mock):
+    cfg = _llm_cfg("ollama")
+    respx_mock.get("http://ollama.test:11434/api/tags").mock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+    reachable, detail = await probe_ollama(cfg)
+    assert reachable is False
+    assert "transport" in detail.lower() or "connect" in detail.lower()
 
 
 # ---------- Build factory ----------------------------------------------------

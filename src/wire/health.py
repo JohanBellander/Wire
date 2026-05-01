@@ -20,6 +20,7 @@ class HealthState:
     status: str = "ok"
     last_ingestion_at: str | None = None
     queue_size: int = 0
+    last_used_provider: str | None = None
     version: str = __version__
 
     def to_dict(self) -> dict:
@@ -43,6 +44,12 @@ def set_queue_size(n: int) -> None:
 
 def set_status(status: str) -> None:
     _state.status = status
+
+
+def set_last_used_provider(name: str) -> None:
+    """Updated after each LLM call so /status can surface which backend
+    actually answered last (could be either primary or fallback)."""
+    _state.last_used_provider = name
 
 
 async def _health_handler(_request: web.Request) -> web.Response:
