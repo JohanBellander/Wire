@@ -32,8 +32,15 @@ class TriageResponse(BaseModel):
     reason: str = Field(max_length=200)
 
 
-def _summarize_event(event: Event) -> str:
-    """Compact representation for the user message."""
+def _summarize_event(event: Event, *, repo_notes: str | None = None) -> str:
+    """Compact representation for the user message.
+
+    `repo_notes` is the per-repo guidance from `repos.yaml` (e.g. "post freely
+    about features and debugging" or "boring infra — only post on releases").
+    Triage uses it to override the generic scoring rubric per-repo: a commit
+    that's "routine internal work" by the default rubric can still score high
+    if the repo notes say "post about all development including infra."
+    """
     payload = event.payload or {}
     raw = payload.get("raw_payload") or {}
     parts = [
@@ -42,6 +49,8 @@ def _summarize_event(event: Event) -> str:
         f"actor: {event.actor or '?'}",
         f"occurred_at: {event.occurred_at.isoformat()}",
     ]
+    if repo_notes:
+        parts.append(f"repo_notes: {repo_notes}")
     if event.event_type == "PushEvent":
         commits = raw.get("commits") or []
         parts.append(f"commit_count: {len(commits)}")
@@ -86,8 +95,13 @@ class TriageResult:
     fallback_used: bool
 
 
-async def triage_event(event: Event, provider: LLMProvider) -> TriageResult:
-    user_msg = _summarize_event(event)
+async def triage_event(
+    event: Event,
+    provider: LLMProvider,
+    *,
+    repo_notes: str | None = None,
+) -> TriageResult:
+    user_msg = _summarize_event(event, repo_notes=repo_notes)
     resp = await provider.complete(
         task="triage",
         system=_system_prompt(),
@@ -105,8 +119,19 @@ async def triage_event(event: Event, provider: LLMProvider) -> TriageResult:
     )
 
 
-async def triage_pending_events(provider: LLMProvider) -> int:
-    """Score every event with triage_score IS NULL. Returns the count scored."""
+async def triage_pending_events(provider: LLMProvider, repos_file=None) -> int:
+    """Score every event with triage_score IS NULL. Returns the count scored.
+
+    `repos_file` is optional but recommended — when provided, per-repo notes
+    from repos.yaml flow into the triage prompt so quiet/noisy/meta repos
+    can override the generic scoring rubric.
+    """
+    notes_by_repo: dict[str, str] = {}
+    if repos_file is not None:
+        for r in repos_file.repos:
+            if r.notes:
+                notes_by_repo[r.name] = r.notes
+
     with db_session.session_scope() as sa:
         rows = list(
             sa.execute(
@@ -117,7 +142,7 @@ async def triage_pending_events(provider: LLMProvider) -> int:
     scored = 0
     for e in rows:
         try:
-            result = await triage_event(e, provider)
+            result = await triage_event(e, provider, repo_notes=notes_by_repo.get(e.repo))
         except LLMError as err:
             log.warning("wire.triage.failed", event_id=e.id, error=str(err))
             continue
@@ -129,10 +154,6 @@ async def triage_pending_events(provider: LLMProvider) -> int:
             row.triage_score = result.score
             row.triage_reason = result.reason
 
-        # Log the LLM call too — bookkeeping shared with budget tracking.
-        # (Real provider returns LLMResponse with cost; here we only have score
-        # back. The provider already logged latency/cost internally is a future
-        # refinement; for now the triage path is best-effort.)
         scored += 1
     return scored
 

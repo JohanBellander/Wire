@@ -22,6 +22,24 @@ CreateEvent/DeleteEvent: the ref_type field tells you what was created/deleted.
   - ref_type=branch or ref_type=tag → almost always 0.0–0.2 (mechanical).
   - ref_type=repository → 0.7–0.9 (you're starting a new project).
 
+Per-repo override:
+The event may include a `repo_notes` field — this is the user's hand-written
+guidance for THIS repo, written in their `repos.yaml`. It overrides the
+generic rubric above. Read the notes and adjust your score accordingly:
+
+  - "post freely about features and debugging" → bias scores up by ~0.2;
+    don't be conservative. Even small shipped changes are worth surfacing.
+  - "boring infra commits — only post on releases or breakthroughs" →
+    bias non-release commits down to 0.0–0.2.
+  - "the bot itself; post about all development including meta improvements" →
+    treat prompt-engineering, refactor, and tooling commits as post-worthy
+    (0.5–0.8) — they're the build-in-public substance for this repo.
+  - "personal infra — post about lessons learned, not secrets" → focus on
+    commits with a clear "I learned X" angle; score routine ops low.
+
+When repo_notes are present, they take precedence over the generic
+boring/routine/maybe/promising/strong scale.
+
 Schema:
 {
   "score": <float 0..1>,

@@ -341,9 +341,36 @@ class OllamaProvider:
         except json.JSONDecodeError as e:
             raise LLMTransientError(f"Ollama returned non-JSON: {e}") from e
 
-        content = data.get("message", {}).get("content", "")
+        msg = data.get("message", {}) or {}
+        content = msg.get("content", "") or ""
         in_t = int(data.get("prompt_eval_count", 0))
         out_t = int(data.get("eval_count", 0))
+
+        # Diagnostic log when the response is empty or suspiciously short:
+        # we want visibility into WHY Ollama produced nothing usable, since
+        # that triggers a fallback to Claude. Common culprits:
+        #   - thinking-mode models put the answer in `message.thinking`
+        #     while content is empty
+        #   - the format=<schema> + think=True combination confused the model
+        #   - context length exceeded (look at prompt_eval_count vs context)
+        #   - done_reason="length" → output truncated mid-token
+        if not content or len(content.strip()) < 20:
+            log.warning(
+                "wire.ollama.short_response",
+                task=task,
+                model=self._cfg.model,
+                content_len=len(content),
+                content_preview=content[:80] or "(empty)",
+                thinking_len=len(msg.get("thinking") or ""),
+                thinking_preview=(msg.get("thinking") or "")[:120],
+                message_keys=sorted(msg.keys()) if isinstance(msg, dict) else [],
+                prompt_eval_count=in_t,
+                eval_count=out_t,
+                done_reason=data.get("done_reason"),
+                think_setting=self._cfg.think,
+                has_format_schema=response_format is not None,
+            )
+
         _validate_output(content, response_format)
         return LLMResponse(
             content=content,

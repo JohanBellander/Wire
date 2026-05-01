@@ -133,7 +133,7 @@ class _Jobs:
             log.exception("wire.poll.ingest_failed")
             return
         try:
-            n = await triage_pending_events(self.provider)
+            n = await triage_pending_events(self.provider, repos_file=self.repos)
             log.info("wire.poll.triaged", n=n)
         except Exception:
             log.exception("wire.poll.triage_failed")
