@@ -36,6 +36,7 @@ from wire.db.models import (
     utc_now,
 )
 from wire.llm.alerts import is_drafting_blocked_by_budget
+from wire.llm.budget import compute_status
 from wire.llm.budget import log_llm_call as _log_llm_call
 from wire.llm.caching import text_block
 from wire.llm.provider import LLMError, LLMProvider, parse_json_lenient
@@ -43,6 +44,18 @@ from wire.llm.provider import LLMError, LLMProvider, parse_json_lenient
 log = structlog.get_logger()
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "llm" / "prompts"
+
+
+# --- typed errors used by /draft ---------------------------------------------
+
+
+class EventNotFoundError(Exception):
+    """Raised by force_draft_for_event when the requested event id doesn't exist."""
+
+
+class BudgetPausedError(Exception):
+    """Raised when the monthly budget cap has been hit. /draft refuses;
+    the user must run /extend first."""
 
 
 def _system_prompt() -> str:
@@ -412,6 +425,7 @@ async def draft_pending_sessions(
             if s is None:
                 continue
             s.drafted_at = utc_now()
+            s.skip_reason = parsed.skip_reason
             for item in parsed.drafts:
                 sa.add(
                     Draft(
@@ -437,3 +451,101 @@ async def draft_pending_sessions(
         )
 
     return results
+
+
+# --- /draft force-draft entry point ------------------------------------------
+
+
+_FORCED_REASONING_PREFIX = "[forced via /draft] "
+
+
+async def force_draft_for_event(
+    event_id: int,
+    config: WireConfig,
+    repos_file: ReposFile,
+    provider: LLMProvider,
+) -> tuple[int | None, str | None]:
+    """Force-draft a single event regardless of triage score / quiet hours.
+
+    Returns (draft_id, skip_reason). draft_id is None if the LLM returned a
+    skip_reason; skip_reason is None on success.
+
+    Raises EventNotFoundError if the event id is unknown, BudgetPausedError
+    if the monthly budget cap is hit.
+    """
+    with db_session.session_scope() as sa:
+        status = compute_status(
+            sa, config.llm.monthly_budget_usd, config.llm.budget_alert_threshold
+        )
+        if status.paused:
+            raise BudgetPausedError(
+                f"month spend ${status.spend_usd:.2f} / cap ${status.cap_usd:.2f}"
+            )
+
+        event = sa.get(Event, event_id)
+        if event is None:
+            raise EventNotFoundError(f"event {event_id} not found")
+        # Eager-load attributes we need outside the txn.
+        original_session_id = event.session_id
+        sa.expunge(event)
+
+    wrapper = Session(
+        repo=event.repo,
+        started_at=event.occurred_at,
+        ended_at=event.occurred_at,
+        closed_reason="immediate",
+        drafted_at=None,
+    )
+    wrapper.events = [event]
+
+    blocks = build_prompt_blocks(wrapper, config, repos_file)
+    user_message = (
+        blocks.user_message
+        + "\n\nNote: user has explicitly requested a draft for this event via /draft. "
+        "Do not return skip_reason."
+    )
+
+    try:
+        resp = await provider.complete(
+            task="drafting",
+            system=blocks.system_blocks,
+            messages=[{"role": "user", "content": user_message}],
+            response_format=DraftResponse,
+            max_tokens=1500,
+        )
+    except LLMError as e:
+        log.warning("wire.drafting.force_llm_failed", event_id=event_id, error=str(e))
+        raise
+
+    _log_llm_call(resp)
+
+    parsed = DraftResponse.model_validate(parse_json_lenient(resp.content))
+
+    if not parsed.drafts:
+        log.info(
+            "wire.drafting.force_skip",
+            event_id=event_id,
+            skip_reason=parsed.skip_reason,
+        )
+        return None, parsed.skip_reason
+
+    first_draft_id: int | None = None
+    with db_session.session_scope() as sa:
+        for i, item in enumerate(parsed.drafts):
+            d = Draft(
+                session_id=original_session_id,
+                text=item.text,
+                reasoning=_FORCED_REASONING_PREFIX + (item.reasoning or ""),
+            )
+            sa.add(d)
+            sa.flush()
+            if i == 0:
+                first_draft_id = d.id
+
+    log.info(
+        "wire.drafting.force_done",
+        event_id=event_id,
+        drafts=len(parsed.drafts),
+        first_draft_id=first_draft_id,
+    )
+    return first_draft_id, None

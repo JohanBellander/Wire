@@ -64,6 +64,7 @@ class Session(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime)
     closed_reason: Mapped[str | None] = mapped_column(String)  # idle | max_hours | immediate
     drafted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    skip_reason: Mapped[str | None] = mapped_column(Text)
 
     events: Mapped[list[Event]] = relationship(
         back_populates="session", order_by="Event.occurred_at"
