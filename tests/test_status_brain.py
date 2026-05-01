@@ -43,7 +43,7 @@ def _config(provider: str = "claude") -> WireConfig:
             provider=provider,
             ollama=OllamaConfig(
                 base_url="http://ollama.test:11434",
-                model="qwen2.5:7b-instruct",
+                model="qwen3.5:9b",
                 timeout_seconds=90,
             ),
             claude=ClaudeModelsConfig(
@@ -147,7 +147,7 @@ async def test_status_renders_ollama_brain_with_fallback_stats(db):
 
     text = _captured_text(update)
     assert "🧠 brain" in text
-    assert "ollama (qwen2.5:7b-instruct)" in text
+    assert "ollama (qwen3.5:9b)" in text
     assert "claude (claude-sonnet-4-6 / claude-haiku-4-5)" in text
     assert "last used: ollama" in text
     # 1 / 4 = 25%
@@ -164,7 +164,7 @@ async def test_status_ollama_brain_with_no_calls_yet(db):
     await status_cmd(update, ctx)
 
     text = _captured_text(update)
-    assert "ollama (qwen2.5:7b-instruct)" in text
+    assert "ollama (qwen3.5:9b)" in text
     assert "no LLM calls yet" in text
 
 

@@ -148,14 +148,14 @@ Never substitute `claude-sonnet-4-6` etc. Model routing in `LLMConfig.claude` (d
 Wire's structured-JSON outputs (`DraftResponse`, `TriageResponse`, etc.) are
 sensitive to model behavior. Helmsman discovered empirically (PRs #3 + #4)
 that mid-size open models default to refusal a lot. The **production-tuned
-defaults** that drop qwen2.5:7b refusal rate from ~40% to ~0%:
+defaults** that drop qwen3.5:9b refusal rate from ~40% to ~0%:
 
 ```yaml
 llm:
   provider: ollama
   ollama:
     base_url: http://192.168.1.50:11434
-    model: qwen2.5:7b-instruct
+    model: qwen3.5:9b
     timeout_seconds: 90
     temperature: 0.5      # baked-in default; lower = more reliable schemas
     think: true           # baked-in default; required for qwen reliability
@@ -201,7 +201,7 @@ shoots to 100%:
 2. Verify `think: true` is set (default, but check after `pre-commit`
    trims have happened).
 3. If still failing, your model may not support the `think` parameter.
-   Try a known-good model: `qwen2.5:7b-instruct` is what Helmsman tested.
+   Try a known-good model: `qwen3.5:9b` is what Helmsman tested.
 4. Last resort: switch back to `provider: claude` while you debug. Cost
    goes up but drafts arrive.
 

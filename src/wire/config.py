@@ -32,7 +32,7 @@ class OllamaConfig(BaseModel):
     base_url: str
     model: str
     timeout_seconds: int = Field(ge=1, le=600)
-    # Empirical defaults from Helmsman's qwen2.5:7b experiments — the
+    # Empirical defaults from Helmsman's qwen3.5:9b experiments — the
     # combination drops structured-output refusal rate from ~40% to ~0%.
     # Override per-deploy in config.yaml if you've tuned for a different model.
     temperature: float = Field(default=0.5, ge=0.0, le=2.0)

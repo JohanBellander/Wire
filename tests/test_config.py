@@ -29,7 +29,7 @@ llm:
   provider: claude
   ollama:
     base_url: http://192.168.1.50:11434/
-    model: qwen2.5:7b-instruct
+    model: qwen3.5:9b
     timeout_seconds: 90
   claude:
     drafting: claude-sonnet-4-6

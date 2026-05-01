@@ -102,7 +102,7 @@ Only do this if you want to shift the bulk of LLM volume off Anthropic. Wire's `
 OLLAMA_HOST=0.0.0.0 ollama serve
 
 # Pull a known-good model. Helmsman + Wire have both production-tested this:
-ollama pull qwen2.5:7b-instruct
+ollama pull qwen3.5:9b
 ```
 
 ### 5.2 — Configure Wire
@@ -114,7 +114,7 @@ llm:
   provider: ollama
   ollama:
     base_url: http://<your ollama host>:11434
-    model: qwen2.5:7b-instruct
+    model: qwen3.5:9b
     timeout_seconds: 90
     temperature: 0.5     # tuned for qwen; raise for more variation, lower for tighter schemas
     think: true          # extended thinking — required for qwen reliability
@@ -123,7 +123,7 @@ llm:
     #   seed: 42
 ```
 
-The `temperature` and `think` defaults match Helmsman's empirical tuning. Without them, qwen2.5:7b refuses to produce structured output ~40% of the time at default settings. With them, refusal rate drops to near zero.
+The `temperature` and `think` defaults match Helmsman's empirical tuning. Without them, qwen3.5:9b refuses to produce structured output ~40% of the time at default settings. With them, refusal rate drops to near zero.
 
 Anthropic stays configured even when `provider: ollama` — it's the automatic fallback. Don't remove `ANTHROPIC_API_KEY` from your env vars.
 
@@ -135,7 +135,7 @@ After redeploy:
 2. **`/status` in Telegram**: the new 🧠 brain block shows primary, fallback, last-used backend, and 24h fallback rate. After the first poll cycle:
    ```
    🧠 brain
-   primary:  ollama (qwen2.5:7b-instruct)
+   primary:  ollama (qwen3.5:9b)
    fallback: claude (claude-sonnet-4-6 / claude-haiku-4-5)
    last used: ollama
    fallback rate (24h): 0% (0 / 12)
@@ -150,7 +150,7 @@ If you switch to Ollama and the brain block shows >20% fallback rate after a few
 |---|---|---|
 | Fallback rate ~100% on every call | Ollama not reachable, or wrong base_url | Check `wire.ollama.unreachable_warning` boot log |
 | Fallback rate 30-60%, intermittent | Schema refusals from qwen | Lower `temperature` to 0.3 |
-| Fallback rate slowly climbing over hours | Memory pressure on Ollama host | `ollama stop` + pull a smaller quant (e.g. `qwen2.5:7b-instruct-q4_K_M`) |
+| Fallback rate slowly climbing over hours | Memory pressure on Ollama host | `ollama stop` + pull a smaller quant (e.g. `qwen3.5:9b-q4_K_M`) |
 | All calls hit timeout | `timeout_seconds` too low for slow host | Raise to 120s or 180s |
 
 If nothing helps, set `provider: claude` while debugging. Cost goes up, but drafts arrive.

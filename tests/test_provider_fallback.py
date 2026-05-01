@@ -41,7 +41,7 @@ def _llm_cfg(provider: str) -> LLMConfig:
         provider=provider,
         ollama=OllamaConfig(
             base_url="http://ollama.test:11434",
-            model="qwen2.5:7b-instruct",
+            model="qwen3.5:9b",
             timeout_seconds=10,
         ),
         claude=ClaudeModelsConfig(
@@ -234,7 +234,7 @@ async def test_ollama_schema_mismatch_falls_back(respx_mock):
 @pytest.mark.asyncio
 async def test_ollama_passes_temperature_and_think(respx_mock):
     """Verify the request body includes temperature and think — the empirical
-    fix that drops qwen2.5:7b refusal rate from ~40% to ~0%."""
+    fix that drops qwen3.5:9b refusal rate from ~40% to ~0%."""
     cfg = _llm_cfg("ollama")
     captured: list[dict] = []
 
@@ -347,7 +347,7 @@ async def test_ollama_extra_options_merged(respx_mock):
         provider="ollama",
         ollama=OllamaConfig(
             base_url="http://ollama.test:11434",
-            model="qwen2.5:7b-instruct",
+            model="qwen3.5:9b",
             timeout_seconds=10,
             temperature=0.7,
             think=False,
