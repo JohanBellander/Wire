@@ -130,6 +130,16 @@ class IngestionConfig(BaseModel):
     first_run_max_age_hours: int = 24
 
 
+class PersonaConfig(BaseModel):
+    """Telegram-only persona controls. Affects how Wire talks to Johan,
+    not the X/Twitter post text. Optional — missing = enabled with defaults."""
+
+    enabled: bool = True
+    llm_intro_on_drafts: bool = True
+    llm_frame_on_digest: bool = True
+    model_task: Literal["drafting", "triage", "voice_profile", "digest"] = "triage"
+
+
 class WireConfig(BaseModel):
     github: GithubConfig
     repos: ReposLocation
@@ -143,6 +153,7 @@ class WireConfig(BaseModel):
     learning: LearningConfig
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
+    persona: PersonaConfig = Field(default_factory=PersonaConfig)
 
 
 class RepoEntry(BaseModel):
