@@ -121,10 +121,12 @@ def gather_numbers(cfg: WireConfig, *, now: datetime | None = None) -> DigestNum
     )
 
 
-def format_digest(n: DigestNumbers) -> str:
+def format_digest_body(n: DigestNumbers) -> str:
+    """Pure-Python factual stats block. Persona-agnostic — every number
+    is preserved verbatim. Header line ('📊 Last 7 days') is intentionally
+    NOT included here; it's added by `format_digest()` so the persona
+    layer can replace it."""
     lines = [
-        "📊 Last 7 days",
-        "",
         f"Drafted: {n.drafted} · Posted: {n.posted} · Rejected: {n.rejected} · "
         f"Saved: {n.saved_pending}",
         f"Approval rate: {n.approval_rate_pct:.0f}%",
@@ -153,20 +155,51 @@ def format_digest(n: DigestNumbers) -> str:
     return "\n".join(lines)
 
 
+def format_digest(
+    n: DigestNumbers,
+    *,
+    opener: str | None = None,
+    closer: str | None = None,
+) -> str:
+    """Compose the full digest message: opener + stats + closer.
+
+    Without persona framing, falls back to the static "📊 Last 7 days" header
+    and no closer — same shape as the pre-persona version.
+    """
+    body = format_digest_body(n)
+    head = opener if opener else "📊 Last 7 days"
+    tail = f"\n\n{closer}" if closer else ""
+    return f"{head}\n\n{body}{tail}"
+
+
 class DigestBuilder:
     """Bound to a WireConfig; exposes a `build_text()` coroutine for the
     Telegram /digest command and the scheduled cron."""
 
-    def __init__(self, cfg: WireConfig) -> None:
+    def __init__(self, cfg: WireConfig, provider=None) -> None:
         self.cfg = cfg
+        self.provider = provider
 
     async def build_text(self) -> str:
         numbers = gather_numbers(self.cfg)
-        return format_digest(numbers)
+        body = format_digest_body(numbers)
+
+        opener: str | None = None
+        closer: str | None = None
+        try:
+            from wire.telegram import persona as persona_mod
+
+            framed = await persona_mod.frame_digest(self.cfg, self.provider, stats_block=body)
+            if framed is not None:
+                opener, closer = framed
+        except Exception:  # noqa: BLE001 — persona must never break the digest
+            log.exception("wire.digest.persona_failed")
+
+        return format_digest(numbers, opener=opener, closer=closer)
 
 
 async def send_digest_to_telegram(app, cfg: WireConfig) -> None:
-    text = DigestBuilder(cfg).build_text()
-    text = await text  # build_text is async
+    provider = app.bot_data.get("wire_provider")
+    text = await DigestBuilder(cfg, provider=provider).build_text()
     chat_id = app.bot_data["wire_chat_id"]
     await app.bot.send_message(chat_id=chat_id, text=text)

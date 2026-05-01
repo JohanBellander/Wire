@@ -329,7 +329,8 @@ async def test_full_path_events_to_telegram(db, monkeypatch):
     args = fake_bot.bot.send_message.await_args
     body_text = args.kwargs["text"]
     assert "Just shipped" in body_text
-    assert "📝 Draft" in body_text
+    # Persona voice renders the header lowercase: "📝 draft #N · repo".
+    assert "📝 draft" in body_text
     # Inline keyboard with 4 buttons
     keyboard = args.kwargs["reply_markup"]
     assert keyboard.inline_keyboard

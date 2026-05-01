@@ -29,6 +29,8 @@ from wire.db import session as db_session
 from wire.db.models import Draft, Session
 from wire.telegram import commands as cmds
 from wire.telegram import handlers as hnd
+from wire.telegram import persona as persona_mod
+from wire.telegram.voice import say
 
 log = structlog.get_logger()
 
@@ -162,9 +164,28 @@ async def send_draft(app: Application, draft_id: int) -> int:
         reasoning = d.reasoning or ""
 
     rendered = render_thread_for_telegram(text)
-    body = f"📝 Draft #{draft_id} · {repo}\n\n{rendered}"
+    header = say("draft_header", draft_id=draft_id, repo=repo)
+
+    # Persona intro is best-effort: if the bot wasn't wired with a full
+    # config / provider (some tests skip this), fall through to no intro.
+    cfg: WireConfig | None = app.bot_data.get("wire_config")
+    provider = app.bot_data.get("wire_provider")
+    intro = (
+        await persona_mod.intro_for_draft(cfg, provider, thread_text=rendered, repo=repo)
+        if cfg is not None
+        else None
+    )
+
+    parts: list[str] = []
+    if intro:
+        parts.append(intro)
+    parts.append(header)
+    parts.append("")
+    parts.append(rendered)
     if reasoning:
-        body += f"\n\nReasoning: {reasoning}"
+        parts.append("")
+        parts.append(f"reasoning: {reasoning}")
+    body = "\n".join(parts)
 
     msg = await app.bot.send_message(
         chat_id=chat_id,

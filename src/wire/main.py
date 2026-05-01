@@ -203,7 +203,7 @@ class _Jobs:
         try:
             from wire.digest.builder import DigestBuilder
 
-            text = await DigestBuilder(self.cfg).build_text()
+            text = await DigestBuilder(self.cfg, provider=self.provider).build_text()
             chat_id = self.telegram_app.bot_data["wire_chat_id"]
             await self.telegram_app.bot.send_message(chat_id=chat_id, text=text)
         except Exception:
@@ -380,7 +380,7 @@ async def run() -> None:
     # Wire the digest builder into Telegram so /digest works.
     from wire.digest.builder import DigestBuilder
 
-    telegram_app.bot_data["wire_digest_builder"] = DigestBuilder(config)
+    telegram_app.bot_data["wire_digest_builder"] = DigestBuilder(config, provider=provider)
 
     # Run-once on boot: send any drafts still pending without a telegram message
     try:

@@ -32,7 +32,7 @@ from wire.llm.budget import estimate_cost_usd
 
 log = structlog.get_logger()
 
-TaskType = Literal["drafting", "triage", "voice_profile", "digest"]
+TaskType = Literal["drafting", "triage", "voice_profile", "digest", "persona"]
 
 
 @dataclass

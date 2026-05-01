@@ -21,6 +21,7 @@ from telegram.ext import ContextTypes
 
 from wire.db import session as db_session
 from wire.db.models import Decision, Draft, Post, utc_now
+from wire.telegram.voice import say
 
 log = structlog.get_logger()
 
@@ -90,11 +91,11 @@ async def _on_approve(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_
     twitter = context.bot_data.get("wire_twitter")
     text = _draft_text(draft_id)
     if text is None:
-        await _reply(update, "Draft not found.")
+        await _reply(update, say("draft_not_found"))
         return
 
     if twitter is None:
-        await _reply(update, "Twitter client not wired — would post (no real send).")
+        await _reply(update, say("post_dry_run"))
         _record_decision(draft_id, decision="approved")
         _set_status(draft_id, "approved")
         return
@@ -103,14 +104,15 @@ async def _on_approve(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_
         result = await twitter.post(text)
     except Exception as e:
         log.exception("wire.twitter.post_failed", draft_id=draft_id, error=str(e))
-        await _reply(update, f"Posting failed: {e}")
+        await _reply(update, say("post_failed", error=str(e)))
         return
 
     _record_decision(draft_id, decision="approved")
     _set_status(draft_id, "approved")
     _record_post(draft_id, twitter_id=result.tweet_id, text=result.posted_text)
 
-    msg = f"✅ Posted: {result.url}" if getattr(result, "url", None) else "✅ Posted."
+    url = getattr(result, "url", None)
+    msg = say("post_success_with_url", url=url) if url else say("post_success_no_url")
     await _reply(update, msg)
 
 
@@ -124,7 +126,7 @@ async def _on_reject_open(
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"Why reject draft #{draft_id}?",
+        text=say("reject_prompt", draft_id=draft_id),
         reply_markup=reject_reason_keyboard(draft_id),
     )
 
@@ -140,12 +142,12 @@ async def _on_reject_reason(
         user = update.effective_user
         if user is not None:
             _set_state(context, user.id, "reject_other", draft_id)
-        await _reply(update, "Send the rejection reason as a reply.")
+        await _reply(update, say("reject_other_prompt"))
         return
 
     _record_decision(draft_id, decision="rejected", reject_reason=reason_key)
     _set_status(draft_id, "rejected")
-    await _reply(update, f"Rejected: {reason_key}.")
+    await _reply(update, say("rejected", reason=reason_key))
 
 
 # ---------------- edit -------------------------------------------------------
@@ -155,13 +157,13 @@ async def _on_edit_open(update: Update, context: ContextTypes.DEFAULT_TYPE, draf
     user = update.effective_user
     if user is not None:
         _set_state(context, user.id, "edit", draft_id)
-    await _reply(update, "Send me the edited version (10 min timeout).")
+    await _reply(update, say("edit_prompt"))
 
 
 async def _on_save(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_id: int) -> None:
     # Save = leave as pending. /saved lists them. expiry is handled by a
     # background sweep; nothing to do beyond an ack here.
-    await _reply(update, "Saved. /saved to view.")
+    await _reply(update, say("saved"))
 
 
 # ---------------- text message handler --------------------------------------
@@ -185,7 +187,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         _pop_state(context, user.id)
         _record_decision(draft_id, decision="rejected", reject_reason=f"other:{text[:200]}")
         _set_status(draft_id, "rejected")
-        await _reply(update, "Rejected with custom reason.")
+        await _reply(update, say("rejected_custom"))
 
 
 async def _commit_edit(
@@ -200,7 +202,7 @@ async def _commit_edit(
 
     original = _draft_text(draft_id)
     if original is None:
-        await _reply(update, "Draft not found.")
+        await _reply(update, say("draft_not_found"))
         return
 
     diff_json = json.dumps(_diff_opcodes(original, edited_text))
@@ -208,24 +210,21 @@ async def _commit_edit(
     if twitter is None:
         _record_decision(draft_id, decision="edited", edited_text=edited_text, edit_diff=diff_json)
         _set_status(draft_id, "edited")
-        await _reply(update, "Edit recorded (no twitter client wired — would post).")
+        await _reply(update, say("edit_dry_run"))
         return
 
     try:
         result = await twitter.post(edited_text)
     except Exception as e:
         log.exception("wire.twitter.edit_post_failed", draft_id=draft_id, error=str(e))
-        await _reply(update, f"Posting edited version failed: {e}")
+        await _reply(update, say("edit_post_failed", error=str(e)))
         return
 
     _record_decision(draft_id, decision="edited", edited_text=edited_text, edit_diff=diff_json)
     _set_status(draft_id, "edited")
     _record_post(draft_id, twitter_id=result.tweet_id, text=result.posted_text)
-    msg = (
-        f"✏️ Edited and posted: {result.url}"
-        if getattr(result, "url", None)
-        else "✏️ Edited and posted."
-    )
+    url = getattr(result, "url", None)
+    msg = say("edit_success_with_url", url=url) if url else say("edit_success_no_url")
     await _reply(update, msg)
 
 

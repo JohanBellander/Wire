@@ -160,7 +160,11 @@ def test_evaluate_alert_pause_after_warn(db):
     _, _ = evaluate_alert(cfg)  # warn
     _add_spend(db, 2.0)  # pushes over 100%
     _, txt = evaluate_alert(cfg)
-    assert txt is not None and "paused" in txt
+    # Persona voice uses "parked" instead of "paused"; both convey the same
+    # state — drafting is on hold until /extend or month rollover.
+    assert txt is not None
+    lowered = txt.lower()
+    assert "parked" in lowered or "paused" in lowered
 
 
 def test_evaluate_alert_resets_when_extended(db):

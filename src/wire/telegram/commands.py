@@ -33,6 +33,7 @@ from wire.drafting.drafter import (
 from wire.events.format import format_event_message
 from wire.health import get_state as get_health_state
 from wire.llm.budget import compute_fallback_stats, compute_status, record_extension
+from wire.telegram.voice import say
 
 log = structlog.get_logger()
 
@@ -104,7 +105,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         fb = compute_fallback_stats(sa, hours=24)
 
     text = (
-        "🤖 wire status\n"
+        f"{say('status_header')}\n"
         f"version: {health.version}\n"
         f"last_ingestion_at: {health.last_ingestion_at or 'never'}\n"
         f"pending drafts: {health.queue_size}\n"
@@ -119,9 +120,10 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 def _format_brain(cfg: WireConfig, health, fb) -> str:
     """Render the LLM-backend status block for /status. Shape mirrors
     Helmsman's: primary, fallback, last used, fallback rate over the window."""
+    header = say("brain_header")
     if cfg.llm.provider == "claude":
         primary_label = f"claude (drafting={cfg.llm.claude.drafting})"
-        return f"🧠 brain\nprimary:  {primary_label}\nfallback: (none — claude only)"
+        return f"{header}\nprimary:  {primary_label}\nfallback: (none — claude only)"
     # provider == ollama → fallback to claude
     primary_label = f"ollama ({cfg.llm.ollama.model})"
     fallback_label = f"claude ({cfg.llm.claude.drafting} / {cfg.llm.claude.triage})"
@@ -134,7 +136,7 @@ def _format_brain(cfg: WireConfig, health, fb) -> str:
         else f"fallback rate ({fb.window_hours}h): no LLM calls yet"
     )
     return (
-        "🧠 brain\n"
+        f"{header}\n"
         f"primary:  {primary_label}\n"
         f"fallback: {fallback_label}\n"
         f"last used: {last_used}\n"
@@ -149,7 +151,7 @@ async def budget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     with db_session.session_scope() as sa:
         s = compute_status(sa, cfg.llm.monthly_budget_usd, cfg.llm.budget_alert_threshold)
     text = (
-        f"💰 budget {s.month}\n"
+        f"{say('budget_header', month=s.month)}\n"
         f"spend:     ${s.spend_usd:.2f}\n"
         f"cap:       ${s.cap_usd:.2f}  (base ${cfg.llm.monthly_budget_usd:.2f}"
         f" + extensions ${s.extension_usd:.2f})\n"
@@ -169,15 +171,15 @@ async def pause_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             hours = float(args[0])
         except ValueError:
-            await _reply(update, "Usage: /pause [hours]")
+            await _reply(update, say("pause_usage"))
             return
         until = utc_now() + timedelta(hours=hours)
         until_iso = until.isoformat()
         _set_state("paused_until", until_iso)
-        await _reply(update, f"⏸ Drafting paused until {until.isoformat()} UTC.")
+        await _reply(update, say("paused_until", until=until.isoformat()))
     else:
         _set_state("paused_until", "")
-        await _reply(update, "⏸ Drafting paused indefinitely. /resume to lift.")
+        await _reply(update, say("paused_indefinite"))
 
 
 async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -188,7 +190,7 @@ async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         row = sa.get(BotState, "paused_until")
         if row is not None:
             sa.delete(row)
-    await _reply(update, "▶️ Drafting resumed.")
+    await _reply(update, say("resumed"))
 
 
 async def saved_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -203,9 +205,9 @@ async def saved_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             .all()
         )
     if not rows:
-        await _reply(update, "No saved drafts.")
+        await _reply(update, say("saved_empty"))
         return
-    lines = ["💤 Saved drafts:"]
+    lines = [say("saved_header")]
     for d in rows[:30]:
         snippet = (d.text or "")[:80].replace("\n", " ")
         lines.append(f'#{d.id} {d.created_at.date()}  "{snippet}"')
@@ -217,7 +219,7 @@ async def digest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     builder = context.bot_data.get("wire_digest_builder")
     if builder is None:
-        await _reply(update, "Digest builder not wired yet.")
+        await _reply(update, say("digest_not_wired"))
         return
     text = await builder.build_text()
     await context.bot.send_message(chat_id=context.bot_data["wire_chat_id"], text=text)
@@ -228,9 +230,9 @@ async def repos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     repos: ReposFile = context.bot_data["wire_repos"]
     if not repos.repos:
-        await _reply(update, "No repos in allowlist.")
+        await _reply(update, say("repos_empty"))
         return
-    lines = ["📦 allowlisted repos:"]
+    lines = [say("repos_header")]
     for r in repos.repos:
         lines.append(f"- {r.name}  ({r.visibility})  {r.notes}")
     await _reply(update, "\n".join(lines))
@@ -245,10 +247,10 @@ async def extend_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         try:
             amount = float(args[0])
         except ValueError:
-            await _reply(update, "Usage: /extend [usd]  (default +$5)")
+            await _reply(update, say("extend_usage"))
             return
     if amount <= 0:
-        await _reply(update, "Amount must be positive.")
+        await _reply(update, say("extend_non_positive"))
         return
     with db_session.session_scope() as sa:
         record_extension(sa, amount, reason=f"telegram /extend by user {update.effective_user.id}")
@@ -257,29 +259,20 @@ async def extend_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         s = compute_status(sa, cfg.llm.monthly_budget_usd, cfg.llm.budget_alert_threshold)
     await _reply(
         update,
-        f"💵 Cap raised by ${amount:.2f}. New cap ${s.cap_usd:.2f}; spent ${s.spend_usd:.2f} "
-        f"({s.pct * 100:.1f}%).",
+        say(
+            "budget_extended",
+            amount=amount,
+            cap=s.cap_usd,
+            spend=s.spend_usd,
+            pct=s.pct * 100,
+        ),
     )
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update, context):
         return
-    text = (
-        "wire — build-in-public bot\n"
-        "draft messages have buttons: ✅ post · ✏️ edit · ❌ reject · 💤 save\n\n"
-        "/status              bot health\n"
-        "/budget              spend vs cap\n"
-        "/pause [hours]       pause drafting\n"
-        "/resume              resume drafting\n"
-        "/saved               list saved drafts\n"
-        "/digest              force-send weekly digest\n"
-        "/repos               list allowlisted repos\n"
-        "/extend [usd]        raise monthly cap by N (default 5)\n"
-        "/last [n]            last N events with triage + outcome\n"
-        "/draft <event_id>    force a draft for a specific event\n"
-    )
-    await _reply(update, text)
+    await _reply(update, say("help_text"))
 
 
 # ---------------- /last + /draft -------------------------------------------
@@ -324,7 +317,7 @@ async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             n = int(args[0])
         except ValueError:
-            await _reply(update, "Usage: /last [n]  (default 5, max 50)")
+            await _reply(update, say("last_usage"))
             return
     n = max(1, min(n, 50))
 
@@ -333,9 +326,9 @@ async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             sa.execute(select(Event).order_by(desc(Event.occurred_at)).limit(n)).scalars().all()
         )
         if not events:
-            await _reply(update, "🕓 no events ingested yet")
+            await _reply(update, say("last_empty"))
             return
-        lines = [f"🕓 last {len(events)} events"]
+        lines = [say("last_header", count=len(events))]
         for e in events:
             score = f"{e.triage_score:.2f}" if e.triage_score is not None else "?"
             msg = format_event_message(e)
@@ -350,37 +343,37 @@ async def draft_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     args = context.args or []
     if not args:
-        await _reply(update, "Usage: /draft <event_id>")
+        await _reply(update, say("draft_usage"))
         return
     try:
         event_id = int(args[0])
     except ValueError:
-        await _reply(update, "Usage: /draft <event_id>  (event_id must be an integer)")
+        await _reply(update, say("draft_usage_int"))
         return
 
     cfg: WireConfig = context.bot_data["wire_config"]
     repos: ReposFile = context.bot_data["wire_repos"]
     provider = context.bot_data.get("wire_provider")
     if provider is None:
-        await _reply(update, "❌ LLM provider not wired into the bot — restart needed.")
+        await _reply(update, say("provider_not_wired"))
         return
 
     try:
         draft_id, skip_reason = await force_draft_for_event(event_id, cfg, repos, provider)
     except EventNotFoundError:
-        await _reply(update, f"❌ event #{event_id} not found")
+        await _reply(update, say("event_not_found", event_id=event_id))
         return
     except BudgetPausedError as e:
-        await _reply(update, f"❌ monthly budget cap hit ({e}); run /extend first")
+        await _reply(update, say("budget_blocked", detail=str(e)))
         return
     except Exception as e:  # noqa: BLE001 — surface unexpected failures to the user
         log.exception("wire.telegram.draft_cmd_failed", event_id=event_id)
-        await _reply(update, f"❌ force-draft failed: {type(e).__name__}: {e}")
+        await _reply(update, say("force_failed", error_type=type(e).__name__, error=str(e)))
         return
 
     if draft_id is None:
         reason = skip_reason or "(no reason given)"
-        await _reply(update, f"⚠️ LLM returned skip_reason: {reason}")
+        await _reply(update, say("force_skip_reason", reason=reason))
         return
 
     # Fire the standard send_draft path so the approval keyboard appears.
@@ -390,6 +383,6 @@ async def draft_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await send_draft(context.application, draft_id)
     except Exception:
         log.exception("wire.telegram.draft_cmd_send_failed", draft_id=draft_id)
-        await _reply(update, f"⚠️ draft #{draft_id} created but send failed; check /saved")
+        await _reply(update, say("force_send_failed", draft_id=draft_id))
         return
-    await _reply(update, f"✅ forced draft #{draft_id} for event #{event_id}")
+    await _reply(update, say("force_success", draft_id=draft_id, event_id=event_id))

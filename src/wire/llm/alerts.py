@@ -52,18 +52,14 @@ def evaluate_alert(cfg: WireConfig) -> tuple[BudgetStatus, str | None]:
 
     text: str | None = None
     if s.paused and last < 1.0:
-        text = (
-            f"🛑 Monthly LLM budget reached: ${s.spend_usd:.2f} / ${s.cap_usd:.2f} "
-            f"({s.pct * 100:.0f}%). Drafting is paused until next month or "
-            "until you /extend [usd] to raise the cap."
-        )
+        from wire.telegram.voice import say
+
+        text = say("budget_capped", spend=s.spend_usd, cap=s.cap_usd)
         _set_alert_state(1.0)
     elif s.warning and last < cfg.llm.budget_alert_threshold:
-        text = (
-            f"⚠️ Monthly LLM budget at {s.pct * 100:.0f}% "
-            f"(${s.spend_usd:.2f} / ${s.cap_usd:.2f}). "
-            "Drafting will pause at 100%. /extend to raise the cap."
-        )
+        from wire.telegram.voice import say
+
+        text = say("budget_warn", pct=s.pct * 100, spend=s.spend_usd, cap=s.cap_usd)
         _set_alert_state(cfg.llm.budget_alert_threshold)
     elif not s.paused and not s.warning and last >= cfg.llm.budget_alert_threshold:
         # Budget situation eased (e.g. /extend bumped cap). Reset.

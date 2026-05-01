@@ -445,7 +445,7 @@ async def test_last_cmd_invalid_arg_replies_usage(db):
     ctx = _make_command_context(args=["banana"])
     await cmds.last_cmd(update, ctx)
     text = update.effective_message.reply_text.await_args.args[0]
-    assert "Usage" in text
+    assert "usage" in text.lower()
 
 
 @pytest.mark.asyncio
@@ -478,7 +478,7 @@ async def test_draft_cmd_skip_reason_path(db, monkeypatch):
     await cmds.draft_cmd(update, ctx)
 
     text = update.effective_message.reply_text.await_args.args[0]
-    assert "skip_reason" in text
+    assert "skip" in text.lower()
     assert "boring" in text
 
 
@@ -488,7 +488,7 @@ async def test_draft_cmd_missing_arg(db):
     ctx = _make_command_context(args=[], provider=MagicMock())
     await cmds.draft_cmd(update, ctx)
     text = update.effective_message.reply_text.await_args.args[0]
-    assert "Usage" in text
+    assert "usage" in text.lower()
 
 
 @pytest.mark.asyncio
@@ -497,7 +497,7 @@ async def test_draft_cmd_non_int_arg(db):
     ctx = _make_command_context(args=["abc"], provider=MagicMock())
     await cmds.draft_cmd(update, ctx)
     text = update.effective_message.reply_text.await_args.args[0]
-    assert "Usage" in text
+    assert "usage" in text.lower()
 
 
 @pytest.mark.asyncio
@@ -530,5 +530,5 @@ async def test_draft_cmd_budget_paused(db, monkeypatch):
     ctx = _make_command_context(args=["1"], provider=MagicMock())
     await cmds.draft_cmd(update, ctx)
     text = update.effective_message.reply_text.await_args.args[0]
-    assert "budget" in text.lower()
+    assert "cap" in text.lower()
     assert "/extend" in text
