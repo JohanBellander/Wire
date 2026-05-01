@@ -316,7 +316,9 @@ async def run() -> None:
         )
 
     # Telegram
-    telegram_app = tgbot.build_application(config, repos, twitter_poster=twitter_client)
+    telegram_app = tgbot.build_application(
+        config, repos, twitter_poster=twitter_client, provider=provider
+    )
     await telegram_app.initialize()
     await telegram_app.start()
     if telegram_app.updater is not None:

@@ -58,6 +58,7 @@ def build_application(
     repos: ReposFile,
     *,
     twitter_poster=None,  # injected; type wire.twitter.client.TwitterClient
+    provider=None,  # injected; type wire.llm.provider.LLMProvider
 ) -> Application:
     app = Application.builder().token(_bot_token(cfg)).build()
 
@@ -66,6 +67,7 @@ def build_application(
     app.bot_data["wire_repos"] = repos
     app.bot_data["wire_chat_id"] = _chat_id(cfg)
     app.bot_data["wire_twitter"] = twitter_poster
+    app.bot_data["wire_provider"] = provider
 
     # Slash commands
     app.add_handler(CommandHandler("status", cmds.status_cmd))
@@ -76,6 +78,8 @@ def build_application(
     app.add_handler(CommandHandler("digest", cmds.digest_cmd))
     app.add_handler(CommandHandler("repos", cmds.repos_cmd))
     app.add_handler(CommandHandler("extend", cmds.extend_cmd))
+    app.add_handler(CommandHandler("last", cmds.last_cmd))
+    app.add_handler(CommandHandler("draft", cmds.draft_cmd))
     app.add_handler(CommandHandler("help", cmds.help_cmd))
     app.add_handler(CommandHandler("start", cmds.help_cmd))
 

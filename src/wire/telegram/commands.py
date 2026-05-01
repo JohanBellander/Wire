@@ -17,13 +17,20 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import desc, select
+from sqlalchemy.orm import Session as SASession
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from wire.config import ReposFile, WireConfig
 from wire.db import session as db_session
-from wire.db.models import BotState, Draft, utc_now
+from wire.db.models import BotState, Draft, Event, Session, utc_now
+from wire.drafting.drafter import (
+    BudgetPausedError,
+    EventNotFoundError,
+    force_draft_for_event,
+)
+from wire.events.format import format_event_message
 from wire.health import get_state as get_health_state
 from wire.llm.budget import compute_fallback_stats, compute_status, record_extension
 
@@ -269,5 +276,120 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/digest              force-send weekly digest\n"
         "/repos               list allowlisted repos\n"
         "/extend [usd]        raise monthly cap by N (default 5)\n"
+        "/last [n]            last N events with triage + outcome\n"
+        "/draft <event_id>    force a draft for a specific event\n"
     )
     await _reply(update, text)
+
+
+# ---------------- /last + /draft -------------------------------------------
+
+
+def _outcome_for_event(sa: SASession, event: Event) -> str:
+    """Return the per-event outcome string for /last.
+
+    Precedence (matches docs/feature-last-draft-commands.md):
+      1. drafted #N (status)         — session has any Draft
+      2. LLM said skip: <reason>     — drafted_at set, no drafts, skip_reason known
+      3. below-threshold skip        — drafted_at set, no drafts, no skip_reason
+      4. pending session close       — session.ended_at IS NULL
+      5. no session                  — event.session_id IS NULL
+    """
+    if event.session_id is None:
+        return "no session"
+    sess = sa.get(Session, event.session_id)
+    if sess is None:
+        return "no session"
+    latest_draft = sa.execute(
+        select(Draft).where(Draft.session_id == sess.id).order_by(desc(Draft.created_at)).limit(1)
+    ).scalar_one_or_none()
+    if latest_draft is not None:
+        return f"drafted #{latest_draft.id} ({latest_draft.status})"
+    if sess.drafted_at is not None:
+        if sess.skip_reason:
+            return f"LLM said skip: {sess.skip_reason}"
+        return "below-threshold skip"
+    if sess.ended_at is None:
+        return "pending session close"
+    # Session is closed but drafting hasn't run yet on it — still pending.
+    return "pending session close"
+
+
+async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
+        return
+    args = context.args or []
+    n = 5
+    if args:
+        try:
+            n = int(args[0])
+        except ValueError:
+            await _reply(update, "Usage: /last [n]  (default 5, max 50)")
+            return
+    n = max(1, min(n, 50))
+
+    with db_session.session_scope() as sa:
+        events = (
+            sa.execute(select(Event).order_by(desc(Event.occurred_at)).limit(n)).scalars().all()
+        )
+        if not events:
+            await _reply(update, "🕓 no events ingested yet")
+            return
+        lines = [f"🕓 last {len(events)} events"]
+        for e in events:
+            score = f"{e.triage_score:.2f}" if e.triage_score is not None else "?"
+            msg = format_event_message(e)
+            snippet = f' "{msg[:60]}"' if msg else ""
+            outcome = _outcome_for_event(sa, e)
+            lines.append(f"[{e.id}] {e.repo}/{e.event_type}{snippet} triage={score} → {outcome}")
+    await _reply(update, "\n".join(lines))
+
+
+async def draft_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
+        return
+    args = context.args or []
+    if not args:
+        await _reply(update, "Usage: /draft <event_id>")
+        return
+    try:
+        event_id = int(args[0])
+    except ValueError:
+        await _reply(update, "Usage: /draft <event_id>  (event_id must be an integer)")
+        return
+
+    cfg: WireConfig = context.bot_data["wire_config"]
+    repos: ReposFile = context.bot_data["wire_repos"]
+    provider = context.bot_data.get("wire_provider")
+    if provider is None:
+        await _reply(update, "❌ LLM provider not wired into the bot — restart needed.")
+        return
+
+    try:
+        draft_id, skip_reason = await force_draft_for_event(event_id, cfg, repos, provider)
+    except EventNotFoundError:
+        await _reply(update, f"❌ event #{event_id} not found")
+        return
+    except BudgetPausedError as e:
+        await _reply(update, f"❌ monthly budget cap hit ({e}); run /extend first")
+        return
+    except Exception as e:  # noqa: BLE001 — surface unexpected failures to the user
+        log.exception("wire.telegram.draft_cmd_failed", event_id=event_id)
+        await _reply(update, f"❌ force-draft failed: {type(e).__name__}: {e}")
+        return
+
+    if draft_id is None:
+        reason = skip_reason or "(no reason given)"
+        await _reply(update, f"⚠️ LLM returned skip_reason: {reason}")
+        return
+
+    # Fire the standard send_draft path so the approval keyboard appears.
+    from wire.telegram.bot import send_draft
+
+    try:
+        await send_draft(context.application, draft_id)
+    except Exception:
+        log.exception("wire.telegram.draft_cmd_send_failed", draft_id=draft_id)
+        await _reply(update, f"⚠️ draft #{draft_id} created but send failed; check /saved")
+        return
+    await _reply(update, f"✅ forced draft #{draft_id} for event #{event_id}")
