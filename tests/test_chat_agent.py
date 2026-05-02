@@ -301,6 +301,157 @@ async def test_chat_force_draft_no_id_skipped(db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_approve_draft_routes_to_handler(db, monkeypatch):
+    """`approve_draft` is the publish-to-X action. The chat dispatch must
+    delegate to `handlers.approve_draft` (which is the inline-keyboard
+    code path under a public name) so the conversational and button
+    flows post identically."""
+    from wire.telegram import handlers as hnd_mod
+
+    fake_approve = AsyncMock()
+    monkeypatch.setattr(hnd_mod, "approve_draft", fake_approve)
+
+    stub = _StubProvider(
+        {
+            "reply": "shipping it.",
+            "actions": [{"name": "approve_draft", "args": {"draft_id": 51}}],
+        }
+    )
+    update = _make_update("publish that draft")
+    ctx = _make_context(stub)
+    await chat_mod.handle_message("publish that draft", update, ctx)
+
+    fake_approve.assert_awaited_once()
+    args = fake_approve.await_args.args
+    assert args[0] is update
+    assert args[1] is ctx
+    assert args[2] == 51  # int draft_id
+
+
+@pytest.mark.asyncio
+async def test_chat_approve_draft_coerces_string_id(db, monkeypatch):
+    """Some local models emit numbers as strings. The dispatcher coerces."""
+    from wire.telegram import handlers as hnd_mod
+
+    fake_approve = AsyncMock()
+    monkeypatch.setattr(hnd_mod, "approve_draft", fake_approve)
+
+    stub = _StubProvider(
+        {"reply": "ok", "actions": [{"name": "approve_draft", "args": {"draft_id": "51"}}]}
+    )
+    await chat_mod.handle_message("post 51", _make_update("post 51"), _make_context(stub))
+
+    fake_approve.assert_awaited_once()
+    assert fake_approve.await_args.args[2] == 51
+
+
+@pytest.mark.asyncio
+async def test_chat_approve_draft_missing_id_skipped(db, monkeypatch):
+    """If the LLM hallucinates an approve action without a draft_id, the
+    dispatcher skips it rather than calling the handler with garbage."""
+    from wire.telegram import handlers as hnd_mod
+
+    fake_approve = AsyncMock()
+    monkeypatch.setattr(hnd_mod, "approve_draft", fake_approve)
+
+    stub = _StubProvider(
+        {"reply": "which one?", "actions": [{"name": "approve_draft", "args": {}}]}
+    )
+    await chat_mod.handle_message("ship it", _make_update("ship it"), _make_context(stub))
+
+    fake_approve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_reject_draft_routes_with_reason(db, monkeypatch):
+    from wire.telegram import handlers as hnd_mod
+
+    fake_reject = AsyncMock()
+    monkeypatch.setattr(hnd_mod, "reject_draft", fake_reject)
+
+    stub = _StubProvider(
+        {
+            "reply": "killed.",
+            "actions": [
+                {
+                    "name": "reject_draft",
+                    "args": {"draft_id": 52, "reason": "too internal"},
+                }
+            ],
+        }
+    )
+    update = _make_update("kill 52, too internal")
+    ctx = _make_context(stub)
+    await chat_mod.handle_message("kill 52, too internal", update, ctx)
+
+    fake_reject.assert_awaited_once()
+    args = fake_reject.await_args.args
+    assert args[2] == 52
+    assert args[3] == "too internal"
+
+
+@pytest.mark.asyncio
+async def test_chat_reject_draft_default_reason(db, monkeypatch):
+    """Reason defaults to 'via_chat' when the LLM omits it — keeps the
+    rejected_reason column non-empty for the learning block."""
+    from wire.telegram import handlers as hnd_mod
+
+    fake_reject = AsyncMock()
+    monkeypatch.setattr(hnd_mod, "reject_draft", fake_reject)
+
+    stub = _StubProvider(
+        {"reply": "scrapped.", "actions": [{"name": "reject_draft", "args": {"draft_id": 52}}]}
+    )
+    await chat_mod.handle_message("scrap that", _make_update("scrap that"), _make_context(stub))
+
+    fake_reject.assert_awaited_once()
+    assert fake_reject.await_args.args[3] == "via_chat"
+
+
+@pytest.mark.asyncio
+async def test_chat_edit_draft_routes_with_instruction(db, monkeypatch):
+    from wire.telegram import handlers as hnd_mod
+
+    fake_edit = AsyncMock()
+    monkeypatch.setattr(hnd_mod, "edit_draft_via_chat", fake_edit)
+
+    stub = _StubProvider(
+        {
+            "reply": "rewriting.",
+            "actions": [
+                {
+                    "name": "edit_draft",
+                    "args": {"draft_id": 51, "instruction": "drop the emoji"},
+                }
+            ],
+        }
+    )
+    update = _make_update("drop the emoji from 51")
+    ctx = _make_context(stub)
+    await chat_mod.handle_message("drop the emoji from 51", update, ctx)
+
+    fake_edit.assert_awaited_once()
+    args = fake_edit.await_args.args
+    assert args[2] == 51
+    assert args[3] == "drop the emoji"
+
+
+@pytest.mark.asyncio
+async def test_chat_edit_draft_missing_args_skipped(db, monkeypatch):
+    from wire.telegram import handlers as hnd_mod
+
+    fake_edit = AsyncMock()
+    monkeypatch.setattr(hnd_mod, "edit_draft_via_chat", fake_edit)
+
+    # Missing instruction
+    stub = _StubProvider(
+        {"reply": "ok", "actions": [{"name": "edit_draft", "args": {"draft_id": 51}}]}
+    )
+    await chat_mod.handle_message("revise 51", _make_update("revise 51"), _make_context(stub))
+    fake_edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_chat_multiple_actions_all_execute(db, monkeypatch):
     fake_pause = AsyncMock()
     fake_extend = AsyncMock()
