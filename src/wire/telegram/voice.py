@@ -208,12 +208,6 @@ PHRASES: dict[str, list[str]] = {
     "digest_closer_fallback": [
         "that's the week on the wire.",
     ],
-    # ---- intent classifier fallback ------------------------------------
-    "intent_unknown": [
-        "didn't catch that, johan. /help for the menu.",
-        "signal's noisy — try /help.",
-        "not sure what you meant. /help shows what i listen for.",
-    ],
     # ---- /help cheat-sheet (single template, no variation) -------------
     "help_text": [
         "wire — build-in-public bot\n"

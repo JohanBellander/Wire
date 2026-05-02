@@ -23,8 +23,7 @@ from wire.config import ReposFile, WireConfig
 from wire.db import session as db_session
 from wire.db.models import Decision, Draft, Post, utc_now
 from wire.db.models import Session as SessionRow
-from wire.telegram import commands as cmds
-from wire.telegram import intent as intent_mod
+from wire.telegram import chat as chat_mod
 from wire.telegram.voice import say
 from wire.util.repo_names import display_name_for
 
@@ -202,11 +201,12 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     Order of dispatch — do not reorder:
       1. State machine (edit / reject_other) wins. If the user just tapped
-         ✏️ Edit, their next message is the revision instruction, not an
-         intent.
-      2. Authorization check — only the configured chat is allowed past the
-         state-machine gate.
-      3. NL intent classification + dispatch via `intent_mod.classify`.
+         ✏️ Edit, their next message is the revision instruction, not a
+         conversation turn.
+      2. Authorization check — only the configured chat is allowed past
+         the state-machine gate.
+      3. Chat agent: free-form conversation with bot-state context and
+         action tools. See `wire.telegram.chat`.
     """
     user = update.effective_user
     if user is None or update.message is None or update.message.text is None:
@@ -229,77 +229,13 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await _reply(update, say("rejected_custom"))
             return
 
-    # Auth check — same gate the slash commands use; protects NL dispatch
-    # from any chat the bot might be added to by accident.
+    # Auth check — same gate the slash commands use.
     expected_chat_id = context.bot_data.get("wire_chat_id")
     chat = update.effective_chat
     if chat is None or expected_chat_id is None or chat.id != expected_chat_id:
         return
 
-    cfg: WireConfig | None = context.bot_data.get("wire_config")
-    provider = context.bot_data.get("wire_provider")
-    if cfg is None:
-        # Bot wasn't wired with full config — silent no-op (matches old
-        # behavior for unrecognized free text).
-        return
-
-    classified = await intent_mod.classify(text, cfg, provider)
-    await _dispatch_intent(classified, update, context)
-
-
-async def _dispatch_intent(
-    classified: intent_mod.ClassifiedIntent,
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    """Route a classified intent to the matching slash-command handler.
-
-    Each `cmds.*_cmd` reads `context.args` for arguments, so we set that
-    list before dispatching. The handler itself enforces the chat-id auth
-    check independently.
-    """
-    intent = classified.intent
-    args = classified.args or {}
-
-    if intent == "status":
-        context.args = []
-        await cmds.status_cmd(update, context)
-    elif intent == "budget":
-        context.args = []
-        await cmds.budget_cmd(update, context)
-    elif intent == "resume":
-        context.args = []
-        await cmds.resume_cmd(update, context)
-    elif intent == "saved":
-        context.args = []
-        await cmds.saved_cmd(update, context)
-    elif intent == "digest":
-        context.args = []
-        await cmds.digest_cmd(update, context)
-    elif intent == "repos":
-        context.args = []
-        await cmds.repos_cmd(update, context)
-    elif intent == "help":
-        context.args = []
-        await cmds.help_cmd(update, context)
-    elif intent == "extend":
-        usd = args.get("usd")
-        context.args = [str(usd)] if usd is not None else []
-        await cmds.extend_cmd(update, context)
-    elif intent == "last":
-        n = args.get("n")
-        context.args = [str(n)] if n is not None else []
-        await cmds.last_cmd(update, context)
-    elif intent == "draft":
-        event_id = args.get("event_id")
-        if event_id is None:
-            await _reply(update, say("intent_unknown"))
-            return
-        context.args = [str(event_id)]
-        await cmds.draft_cmd(update, context)
-    else:
-        # unknown / draft_revise outside an edit-state / anything else.
-        await _reply(update, say("intent_unknown"))
+    await chat_mod.handle_message(text, update, context)
 
 
 async def _commit_edit(
