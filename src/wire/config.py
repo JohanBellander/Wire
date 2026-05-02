@@ -13,7 +13,7 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
 class GithubConfig(BaseModel):
@@ -47,6 +47,31 @@ class OllamaConfig(BaseModel):
         return v.rstrip("/")
 
 
+class LlamaCppConfig(BaseModel):
+    """OpenAI-compatible HTTP backend (llama.cpp server, vLLM, OpenRouter, etc.).
+
+    The endpoint must speak OpenAI's `POST /v1/chat/completions` shape.
+    `base_url` should include the `/v1` segment (e.g. `https://llm.example.com/v1`).
+    Auth is `Authorization: Bearer <api_key>`, where the key is read from the
+    env var named in `api_key_env` at boot — set the env var in Coolify or
+    `.env`, not here. Empty / missing key is allowed for unauth'd local servers.
+    """
+
+    base_url: str
+    model: str
+    timeout_seconds: int = Field(ge=1, le=600)
+    api_key_env: str = "LLM_API_KEY"
+    temperature: float = Field(default=0.5, ge=0.0, le=2.0)
+    # Escape hatch for top_p, seed, top_k, etc. Values flow into the request
+    # body alongside model/messages/temperature without code changes.
+    extra_options: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("base_url")
+    @classmethod
+    def _strip_trailing_slash(cls, v: str) -> str:
+        return v.rstrip("/")
+
+
 class ClaudeModelsConfig(BaseModel):
     drafting: str
     triage: str
@@ -55,12 +80,19 @@ class ClaudeModelsConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["claude", "ollama"]
+    provider: Literal["claude", "ollama", "llamacpp"]
     ollama: OllamaConfig
+    llamacpp: LlamaCppConfig | None = None
     claude: ClaudeModelsConfig
     prompt_caching: bool = True
     monthly_budget_usd: float = Field(gt=0)
     budget_alert_threshold: float = Field(gt=0, lt=1)
+
+    @model_validator(mode="after")
+    def _llamacpp_present_when_selected(self) -> LLMConfig:
+        if self.provider == "llamacpp" and self.llamacpp is None:
+            raise ValueError("llm.provider=llamacpp requires an llm.llamacpp block in config.yaml")
+        return self
 
 
 class SessionConfig(BaseModel):

@@ -1,10 +1,13 @@
 """LLM provider abstraction. See SPEC.MD §3.
 
-Three concrete providers:
+Four concrete providers:
 
   ClaudeProvider    — anthropic SDK with per-task model routing.
   OllamaProvider    — POST /api/chat to a self-hosted host, format: json.
-  FallbackProvider  — wraps Ollama with Claude as automatic fallback.
+  LlamaCppProvider  — OpenAI-compatible /v1/chat/completions (llama.cpp, vLLM,
+                       OpenRouter, etc.) with Bearer auth + JSON-schema enforced
+                       structured output.
+  FallbackProvider  — wraps a local primary with Claude as automatic fallback.
 
 build_provider() picks the right shape from the LLMConfig toggle.
 """
@@ -12,6 +15,7 @@ build_provider() picks the right shape from the LLMConfig toggle.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -402,14 +406,207 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
+# --- LlamaCppProvider ---------------------------------------------------------
+
+
+class LlamaCppProvider:
+    """OpenAI-compatible local backend (llama.cpp server, vLLM, OpenRouter, ...).
+
+    POSTs to `{base_url}/chat/completions` with Bearer auth. When a pydantic
+    `response_format` is provided, sends the JSON Schema in the OpenAI
+    `response_format: {"type": "json_schema", ...}` shape; falls back to
+    `{"type": "json_object"}` if the server rejects the schema form.
+    """
+
+    def __init__(
+        self,
+        config: LLMConfig,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if config.llamacpp is None:
+            raise ValueError(
+                "LlamaCppProvider built without llm.llamacpp config — should be "
+                "rejected upstream by LLMConfig validation."
+            )
+        self._cfg = config.llamacpp
+        self._client = client
+        self._owns_client = client is None
+        self._api_key = os.environ.get(self._cfg.api_key_env, "") or ""
+
+    @property
+    def name(self) -> str:
+        return "llamacpp"
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self._cfg.timeout_seconds)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and self._owns_client:
+            await self._client.aclose()
+            self._client = None
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
+
+    @staticmethod
+    def _flatten_messages(
+        system: str | list[dict],
+        messages: list[dict],
+    ) -> list[dict[str, Any]]:
+        """Convert Anthropic-shaped system/messages into OpenAI's flat
+        list-of-{role, content}. Drops cache_control markers (OpenAI ignores)."""
+        out: list[dict[str, Any]] = []
+        sys_text = _system_to_text(system)
+        if sys_text:
+            out.append({"role": "system", "content": sys_text})
+        for m in messages:
+            out.append({"role": m["role"], "content": _content_to_text(m["content"])})
+        return out
+
+    def _build_response_format(
+        self,
+        response_format: type[BaseModel] | None,
+    ) -> dict[str, Any] | None:
+        if response_format is None:
+            return None
+        try:
+            schema = response_format.model_json_schema()
+        except Exception:  # noqa: BLE001 — defensive
+            return {"type": "json_object"}
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": response_format.__name__,
+                "schema": schema,
+                "strict": True,
+            },
+        }
+
+    async def complete(
+        self,
+        task: TaskType,
+        system: str | list[dict],
+        messages: list[dict],
+        response_format: type[BaseModel] | None = None,
+        max_tokens: int = 1500,
+    ) -> LLMResponse:
+        oai_messages = self._flatten_messages(system, messages)
+
+        body: dict[str, Any] = {
+            "model": self._cfg.model,
+            "messages": oai_messages,
+            "max_tokens": max_tokens,
+            "temperature": self._cfg.temperature,
+            "stream": False,
+        }
+        body.update(self._cfg.extra_options)
+
+        rf = self._build_response_format(response_format)
+        if rf is not None:
+            body["response_format"] = rf
+
+        client = self._get_client()
+        url = f"{self._cfg.base_url}/chat/completions"
+        t0 = time.perf_counter()
+
+        async def _post(req_body: dict[str, Any]) -> httpx.Response:
+            return await client.post(
+                url,
+                json=req_body,
+                headers=self._headers(),
+                timeout=self._cfg.timeout_seconds,
+            )
+
+        try:
+            resp = await _post(body)
+        except httpx.TimeoutException as e:
+            raise LLMTransientError(f"llamacpp timeout: {e}") from e
+        except httpx.TransportError as e:
+            raise LLMTransientError(f"llamacpp transport error: {e}") from e
+
+        # Some llama.cpp builds reject json_schema but accept json_object.
+        # Retry once with the looser shape so a stale server doesn't cascade
+        # to Claude on every call.
+        if resp.status_code == 400 and rf is not None and rf.get("type") == "json_schema":
+            body["response_format"] = {"type": "json_object"}
+            try:
+                resp = await _post(body)
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                raise LLMTransientError(f"llamacpp retry failed: {e}") from e
+
+        latency = int((time.perf_counter() - t0) * 1000)
+
+        if resp.status_code in (401, 403):
+            raise LLMAuthError(
+                f"llamacpp auth failed: HTTP {resp.status_code} "
+                f"(check {self._cfg.api_key_env} env var)"
+            )
+        if resp.status_code >= 500:
+            raise LLMTransientError(f"llamacpp HTTP {resp.status_code}: {resp.text[:200]}")
+        if resp.status_code >= 400:
+            raise LLMError(f"llamacpp HTTP {resp.status_code}: {resp.text[:200]}")
+
+        try:
+            data = resp.json()
+        except json.JSONDecodeError as e:
+            raise LLMTransientError(f"llamacpp returned non-JSON: {e}") from e
+
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMSchemaError("llamacpp response had no choices")
+        msg = choices[0].get("message") or {}
+        content = msg.get("content", "") or ""
+
+        usage = data.get("usage") or {}
+        in_t = int(usage.get("prompt_tokens", 0) or 0)
+        out_t = int(usage.get("completion_tokens", 0) or 0)
+
+        if not content or len(content.strip()) < 20:
+            log.warning(
+                "wire.llamacpp.short_response",
+                task=task,
+                model=self._cfg.model,
+                content_len=len(content),
+                content_preview=content[:80] or "(empty)",
+                prompt_tokens=in_t,
+                completion_tokens=out_t,
+                finish_reason=choices[0].get("finish_reason"),
+                has_response_format=response_format is not None,
+            )
+
+        _validate_output(content, response_format)
+        return LLMResponse(
+            content=content,
+            provider="llamacpp",
+            model=self._cfg.model,
+            input_tokens=in_t,
+            output_tokens=out_t,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            latency_ms=latency,
+            cost_usd=0.0,
+            task=task,
+        )
+
+
 # --- FallbackProvider ---------------------------------------------------------
 
 
 class FallbackProvider:
-    """Wraps Ollama with Claude as automatic fallback. Per SPEC §3, all tasks
-    go to Ollama first; Claude is only invoked when Ollama fails."""
+    """Wraps a local primary (Ollama or llama.cpp) with Claude as automatic
+    fallback. Per SPEC §3, all tasks go to the local primary first; Claude is
+    only invoked when the primary fails."""
 
-    def __init__(self, primary: OllamaProvider, fallback: ClaudeProvider) -> None:
+    def __init__(
+        self,
+        primary: OllamaProvider | LlamaCppProvider,
+        fallback: ClaudeProvider,
+    ) -> None:
         self.primary = primary
         self.fallback = fallback
 
@@ -436,7 +633,8 @@ class FallbackProvider:
             log.warning(
                 "wire.llm.fallback",
                 task=task,
-                ollama_error=str(e),
+                primary=self.primary.name,
+                primary_error=str(e),
                 error_type=type(e).__name__,
             )
 
@@ -474,18 +672,53 @@ async def probe_ollama(config: LLMConfig, *, timeout_seconds: float = 5.0) -> tu
         return False, f"{type(e).__name__}: {e}"
 
 
+async def probe_llamacpp(config: LLMConfig, *, timeout_seconds: float = 5.0) -> tuple[bool, str]:
+    """Soft reachability probe for the configured llama.cpp / OpenAI-compat
+    host. Hits `GET /models` (the standard OpenAI listing endpoint).
+
+    Returns (reachable, detail). Never raises."""
+    if config.llamacpp is None:
+        return False, "no llamacpp config"
+    base = config.llamacpp.base_url
+    url = f"{base}/models"
+    api_key = os.environ.get(config.llamacpp.api_key_env, "") or ""
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code in (401, 403):
+            return False, f"HTTP {resp.status_code} (check {config.llamacpp.api_key_env})"
+        if resp.status_code != 200:
+            return False, f"HTTP {resp.status_code}"
+        data = resp.json()
+        models = data.get("data", []) if isinstance(data, dict) else []
+        return True, f"{len(models)} models available"
+    except httpx.TimeoutException:
+        return False, f"timeout after {timeout_seconds}s"
+    except httpx.TransportError as e:
+        return False, f"transport error: {e}"
+    except Exception as e:  # noqa: BLE001 — defensive
+        return False, f"{type(e).__name__}: {e}"
+
+
 def build_provider(
     config: LLMConfig,
     *,
     claude: ClaudeProvider | None = None,
     ollama: OllamaProvider | None = None,
+    llamacpp: LlamaCppProvider | None = None,
 ) -> LLMProvider:
     """Build the right provider tree. Optional injected providers are used
-    by tests; production passes neither."""
+    by tests; production passes none."""
     claude_p = claude or ClaudeProvider(config)
     if config.provider == "claude":
         return claude_p
     if config.provider == "ollama":
         ollama_p = ollama or OllamaProvider(config)
         return FallbackProvider(primary=ollama_p, fallback=claude_p)
+    if config.provider == "llamacpp":
+        llamacpp_p = llamacpp or LlamaCppProvider(config)
+        return FallbackProvider(primary=llamacpp_p, fallback=claude_p)
     raise ValueError(f"Unknown provider: {config.provider}")
