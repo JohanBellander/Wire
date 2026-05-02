@@ -146,7 +146,6 @@ CALLER_KWARGS: dict[str, dict[str, object]] = {
     "digest_opener_fallback": {},
     "digest_closer_fallback": {},
     "help_text": {},
-    "intent_unknown": {},
 }
 
 

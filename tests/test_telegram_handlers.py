@@ -692,12 +692,13 @@ async def test_draft_cmd_budget_paused(db, monkeypatch):
     assert "/extend" in text
 
 
-# ---------------- NL dispatch via text_message_handler ----------------------
+# ---------------- chat agent dispatch via text_message_handler --------------
 
 
-def _make_nl_context(twitter=None) -> MagicMock:
-    """Like _make_context but also wires wire_config + wire_provider so the
-    NL classifier can run."""
+def _make_chat_context(twitter=None) -> MagicMock:
+    """Context wired for the chat-agent path. Provides cfg/provider/repos
+    in bot_data, but tests stub `chat_mod.handle_message` directly so the
+    LLM is never reached."""
     ctx = MagicMock()
     ctx.bot_data = {
         "wire_chat_id": 1,
@@ -710,148 +711,89 @@ def _make_nl_context(twitter=None) -> MagicMock:
     return ctx
 
 
-def _stub_classify(monkeypatch, intent: str, args: dict | None = None) -> None:
-    """Patch `intent.classify` to return a canned ClassifiedIntent without
-    hitting any LLM."""
+@pytest.mark.asyncio
+async def test_text_message_routes_to_chat_agent(db, monkeypatch):
+    """Free-text in the configured chat goes to `chat.handle_message`."""
     from wire.telegram import handlers as hnd_mod
-    from wire.telegram.intent import ClassifiedIntent
 
-    async def _fake(text, cfg, provider):
-        return ClassifiedIntent(intent=intent, args=args or {}, confidence=0.9)
+    fake_handle = AsyncMock()
+    monkeypatch.setattr(hnd_mod.chat_mod, "handle_message", fake_handle)
 
-    monkeypatch.setattr(hnd_mod.intent_mod, "classify", _fake)
-
-
-@pytest.mark.asyncio
-async def test_nl_dispatch_status_calls_status_cmd(db, monkeypatch):
-    _stub_classify(monkeypatch, "status")
-    fake_status = AsyncMock()
-    monkeypatch.setattr(cmds, "status_cmd", fake_status)
-
-    update = _make_update_with_text("how are you doing")
-    ctx = _make_nl_context()
+    update = _make_update_with_text("how are you doing today")
+    ctx = _make_chat_context()
     await text_message_handler(update, ctx)
 
-    fake_status.assert_awaited_once()
-    # context.args is the empty list for arg-less intents.
-    assert ctx.args == []
+    fake_handle.assert_awaited_once()
+    # First positional arg is the trimmed text.
+    assert fake_handle.await_args.args[0] == "how are you doing today"
 
 
 @pytest.mark.asyncio
-async def test_nl_dispatch_extend_passes_amount_arg(db, monkeypatch):
-    _stub_classify(monkeypatch, "extend", args={"usd": 25})
-    fake_extend = AsyncMock()
-    monkeypatch.setattr(cmds, "extend_cmd", fake_extend)
-
-    update = _make_update_with_text("extend by 25")
-    ctx = _make_nl_context()
-    await text_message_handler(update, ctx)
-
-    fake_extend.assert_awaited_once()
-    assert ctx.args == ["25"]
-
-
-@pytest.mark.asyncio
-async def test_nl_dispatch_last_passes_n_arg(db, monkeypatch):
-    _stub_classify(monkeypatch, "last", args={"n": 15})
-    fake_last = AsyncMock()
-    monkeypatch.setattr(cmds, "last_cmd", fake_last)
-
-    update = _make_update_with_text("show me last 15 events")
-    ctx = _make_nl_context()
-    await text_message_handler(update, ctx)
-
-    fake_last.assert_awaited_once()
-    assert ctx.args == ["15"]
-
-
-@pytest.mark.asyncio
-async def test_nl_dispatch_draft_requires_event_id(db, monkeypatch):
-    """draft intent without an event_id arg falls through to intent_unknown
-    rather than calling draft_cmd with empty args."""
-    _stub_classify(monkeypatch, "draft", args={})
-    fake_draft = AsyncMock()
-    monkeypatch.setattr(cmds, "draft_cmd", fake_draft)
-
-    update = _make_update_with_text("force a draft")
-    ctx = _make_nl_context()
-    await text_message_handler(update, ctx)
-
-    fake_draft.assert_not_awaited()
-    update.effective_message.reply_text.assert_awaited()
-    reply = update.effective_message.reply_text.await_args.args[0]
-    assert "/help" in reply or "?" in reply or "didn't" in reply.lower() or "noisy" in reply.lower()
-
-
-@pytest.mark.asyncio
-async def test_nl_dispatch_unknown_replies_with_fallback(db, monkeypatch):
-    _stub_classify(monkeypatch, "unknown")
-    update = _make_update_with_text("hi wire what time is it")
-    ctx = _make_nl_context()
-    await text_message_handler(update, ctx)
-
-    update.effective_message.reply_text.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_state_machine_wins_over_nl_dispatch(db, monkeypatch):
+async def test_text_message_state_machine_wins_over_chat(db, monkeypatch):
     """If the user is mid-edit, their next text is the edit instruction —
-    not an intent. The classifier must NOT be called."""
+    the chat agent must NOT be called."""
     with db.session_scope() as sa:
         d = Draft(text="original")
         sa.add(d)
         sa.flush()
         did = d.id
 
-    fake_twitter = MagicMock()
-    post_result = MagicMock()
-    post_result.tweet_id = "tw-9"
-    post_result.posted_text = "rewritten"
-    post_result.url = "https://x.com/user/status/tw-9"
-    fake_twitter.post = AsyncMock(return_value=post_result)
-
-    classify_called = False
-
-    async def _spy_classify(text, cfg, provider):
-        nonlocal classify_called
-        classify_called = True
-        from wire.telegram.intent import ClassifiedIntent
-
-        return ClassifiedIntent(intent="status", args={}, confidence=1.0)
-
     from wire.telegram import handlers as hnd_mod
 
-    monkeypatch.setattr(hnd_mod.intent_mod, "classify", _spy_classify)
+    chat_called = False
 
-    ctx = _make_nl_context(twitter=fake_twitter)
+    async def _spy(text, update, context):
+        nonlocal chat_called
+        chat_called = True
+
+    monkeypatch.setattr(hnd_mod.chat_mod, "handle_message", _spy)
+    # Stub revise_draft so the edit path doesn't try to reach an LLM.
+    from wire.drafting import drafter as drafter_mod
+    from wire.telegram import bot as bot_mod
+
+    monkeypatch.setattr(drafter_mod, "revise_draft", AsyncMock(return_value="rewritten"))
+    monkeypatch.setattr(bot_mod, "send_draft", AsyncMock(return_value=1))
+
+    ctx = _make_chat_context()
     ctx.bot_data["wire_pending_state"] = {77: ("edit", did, 9999999999.0)}
-    update = _make_update_with_text("rewritten", user_id=77)
+    update = _make_update_with_text("shorter", user_id=77)
     await text_message_handler(update, ctx)
 
-    # State machine intercepted — classifier never ran.
-    assert classify_called is False
+    assert chat_called is False
 
 
 @pytest.mark.asyncio
-async def test_nl_dispatch_ignores_other_chats(db, monkeypatch):
-    """The NL handler must not act on text from chats outside the
-    configured one — even if the message looks like a valid intent."""
-    classify_called = False
-
-    async def _spy(text, cfg, provider):
-        nonlocal classify_called
-        classify_called = True
-        from wire.telegram.intent import ClassifiedIntent
-
-        return ClassifiedIntent(intent="status", args={}, confidence=1.0)
-
+async def test_text_message_ignores_other_chats(db, monkeypatch):
+    """The chat agent must not act on text from chats outside the
+    configured one — defence in depth if the bot is added to a different
+    chat by accident."""
     from wire.telegram import handlers as hnd_mod
 
-    monkeypatch.setattr(hnd_mod.intent_mod, "classify", _spy)
+    chat_called = False
 
-    ctx = _make_nl_context()
+    async def _spy(text, update, context):
+        nonlocal chat_called
+        chat_called = True
+
+    monkeypatch.setattr(hnd_mod.chat_mod, "handle_message", _spy)
+
+    ctx = _make_chat_context()
     update = _make_update_with_text("status", chat_id=999)  # wrong chat id
     await text_message_handler(update, ctx)
 
-    assert classify_called is False
+    assert chat_called is False
     update.effective_message.reply_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_text_message_empty_string_no_op(db, monkeypatch):
+    from wire.telegram import handlers as hnd_mod
+
+    fake_handle = AsyncMock()
+    monkeypatch.setattr(hnd_mod.chat_mod, "handle_message", fake_handle)
+
+    update = _make_update_with_text("   ")  # whitespace only
+    ctx = _make_chat_context()
+    await text_message_handler(update, ctx)
+
+    fake_handle.assert_not_awaited()
