@@ -31,7 +31,16 @@ log = structlog.get_logger()
 
 CHAT_PROMPT_PATH = Path(__file__).resolve().parents[1] / "llm" / "prompts" / "chat.txt"
 
-ActionName = Literal["pause", "resume", "extend", "force_draft", "force_digest"]
+ActionName = Literal[
+    "pause",
+    "resume",
+    "extend",
+    "force_draft",
+    "force_digest",
+    "approve_draft",
+    "reject_draft",
+    "edit_draft",
+]
 
 
 class ChatAction(BaseModel):
@@ -143,6 +152,10 @@ async def _execute_action(
     name = action.name
     args = action.args or {}
 
+    # Lazy import — handlers imports chat at module load; importing it back
+    # eagerly would cycle.
+    from wire.telegram import handlers as hnd
+
     try:
         if name == "pause":
             hours = args.get("hours")
@@ -165,8 +178,42 @@ async def _execute_action(
         elif name == "force_digest":
             context.args = []
             await cmds.digest_cmd(update, context)
+        elif name == "approve_draft":
+            draft_id = _coerce_int(args.get("draft_id"))
+            if draft_id is None:
+                log.warning("wire.chat.approve_no_id")
+                return
+            await hnd.approve_draft(update, context, draft_id)
+        elif name == "reject_draft":
+            draft_id = _coerce_int(args.get("draft_id"))
+            if draft_id is None:
+                log.warning("wire.chat.reject_no_id")
+                return
+            reason = str(args.get("reason") or "via_chat")[:200]
+            await hnd.reject_draft(update, context, draft_id, reason)
+        elif name == "edit_draft":
+            draft_id = _coerce_int(args.get("draft_id"))
+            instruction = args.get("instruction")
+            if draft_id is None or not instruction:
+                log.warning("wire.chat.edit_missing_args", draft_id=draft_id)
+                return
+            await hnd.edit_draft_via_chat(update, context, draft_id, str(instruction))
     except Exception:
         log.exception("wire.chat.action_failed", action=name)
+
+
+def _coerce_int(value: Any) -> int | None:
+    """Some local models emit numbers as strings ("51"). Accept both, give
+    up on anything else."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
 
 
 async def _reply(update: Update, text: str) -> None:

@@ -72,6 +72,14 @@ def build_application(
     app.bot_data["wire_twitter"] = twitter_poster
     app.bot_data["wire_provider"] = provider
 
+    # Surface the twitter-wiring state at boot so logs alone tell us whether
+    # an approve click would reach X or fall into the dry-run branch.
+    log.info(
+        "wire.telegram.bot_built",
+        twitter_wired=twitter_poster is not None,
+        provider_wired=provider is not None,
+    )
+
     # Only safety-critical slash commands stay as slashes — /pause is an
     # always-available kill switch and /help is the discoverable cheat-sheet.
     # Everything else (status, budget, resume, saved, digest, repos, extend,

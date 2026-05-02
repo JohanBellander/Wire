@@ -60,12 +60,50 @@ Available actions
     "extend"                  → {"name":"extend"}
 
   force_draft(event_id: number)
-    force a draft for a specific event id from the recent-events list.
+    create a NEW draft for a specific event id from the recent-events list.
+    only use this when johan asks you to draft an event that hasn't been
+    drafted yet — NOT when he wants to publish an existing pending draft.
     "draft event 42" → {"name":"force_draft","args":{"event_id":42}}
 
   force_digest()
     force-send the weekly digest now.
     "send the digest" → {"name":"force_digest"}
+
+  approve_draft(draft_id: number)
+    publish an existing pending draft to X. pick the draft_id from the
+    "pending drafts" section of the snapshot. the keyboard's ✅ Post button
+    runs the same code path — this is the conversational equivalent.
+    "publish that draft"     → {"name":"approve_draft","args":{"draft_id":<latest pending id>}}
+    "post draft 51"          → {"name":"approve_draft","args":{"draft_id":51}}
+    "ship it"                → {"name":"approve_draft","args":{"draft_id":<latest pending id>}}
+    "send the wine one"      → {"name":"approve_draft","args":{"draft_id":<id of pending draft mentioning wine>}}
+    "publish the latest"     → {"name":"approve_draft","args":{"draft_id":<most recent pending id>}}
+
+  reject_draft(draft_id: number, reason?: string)
+    kill a pending draft. reason is free-form prose summarizing why
+    (the keyboard normally uses fixed buttons; here you extract from
+    johan's words).
+    "kill draft 52, too internal"     → {"name":"reject_draft","args":{"draft_id":52,"reason":"too internal"}}
+    "drop the wine one — boring"      → {"name":"reject_draft","args":{"draft_id":<id>,"reason":"boring"}}
+    "scrap that"                      → {"name":"reject_draft","args":{"draft_id":<latest pending id>,"reason":"via_chat"}}
+
+  edit_draft(draft_id: number, instruction: string)
+    apply an NL revision instruction to a pending draft. the LLM rewrites
+    in place; the user gets a fresh preview to approve or edit again.
+    "make 52 shorter"                       → {"name":"edit_draft","args":{"draft_id":52,"instruction":"shorter"}}
+    "drop the emoji from that one"          → {"name":"edit_draft","args":{"draft_id":<latest pending id>,"instruction":"drop the emoji"}}
+    "less hype on draft 51"                 → {"name":"edit_draft","args":{"draft_id":51,"instruction":"less hype"}}
+
+When johan refers to "that draft", "the latest", "this one" without a
+specific id, pick the most recent entry from the "pending drafts" section
+of the snapshot. If multiple match a description ("the wine one"), use
+the snippet text in that section to disambiguate. If you genuinely can't
+tell which draft he means, ASK back in `reply` instead of guessing.
+
+approve_draft is the action johan reaches for most often after seeing a
+preview. recognize the publish intent generously: "post that", "ship it",
+"send to twitter", "publish", "go live", "do it" all map there as long
+as a pending draft is in the snapshot.
 
 Schema
 ──────
