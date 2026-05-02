@@ -785,6 +785,103 @@ async def test_text_message_ignores_other_chats(db, monkeypatch):
     update.effective_message.reply_text.assert_not_awaited()
 
 
+# ---------------- chat-agent entry points -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handler_approve_draft_publishes(db):
+    """Public `approve_draft` mirrors the keyboard's ✅ Post path so the
+    chat agent can drive it from natural language."""
+    from wire.telegram.handlers import approve_draft as approve_draft_fn
+
+    with db.session_scope() as sa:
+        d = Draft(text="ship me")
+        sa.add(d)
+        sa.flush()
+        did = d.id
+
+    fake_twitter = MagicMock()
+    post_result = MagicMock()
+    post_result.tweet_id = "tw-7"
+    post_result.posted_text = "ship me"
+    post_result.url = "https://x.com/u/status/7"
+    fake_twitter.post = AsyncMock(return_value=post_result)
+
+    update = _make_update_with_callback(f"approve:{did}")
+    ctx = _make_context(twitter=fake_twitter)
+    await approve_draft_fn(update, ctx, did)
+
+    fake_twitter.post.assert_awaited_once_with("ship me")
+    with db.session_scope() as sa:
+        d = sa.get(Draft, did)
+        assert d.status == "approved"
+        dec = sa.query(Decision).filter_by(draft_id=did).one()
+        assert dec.decision == "approved"
+
+
+@pytest.mark.asyncio
+async def test_handler_reject_draft_records_reason(db):
+    from wire.telegram.handlers import reject_draft as reject_draft_fn
+
+    with db.session_scope() as sa:
+        d = Draft(text="boring fix")
+        sa.add(d)
+        sa.flush()
+        did = d.id
+
+    update = _make_update_with_callback(f"reject:{did}")
+    ctx = _make_context()
+    await reject_draft_fn(update, ctx, did, "too internal")
+
+    with db.session_scope() as sa:
+        d = sa.get(Draft, did)
+        assert d.status == "rejected"
+        dec = sa.query(Decision).filter_by(draft_id=did).one()
+        assert dec.decision == "rejected"
+        assert dec.reject_reason == "too internal"
+
+
+@pytest.mark.asyncio
+async def test_handler_reject_draft_missing_draft(db):
+    from wire.telegram.handlers import reject_draft as reject_draft_fn
+
+    update = _make_update_with_callback("reject:9999")
+    ctx = _make_context()
+    await reject_draft_fn(update, ctx, 9999, "any")
+
+    update.effective_message.reply_text.assert_awaited()
+    text = update.effective_message.reply_text.await_args.args[0]
+    assert "ghost" in text.lower() or "not found" in text.lower() or "no draft" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_handler_edit_draft_via_chat_delegates(db, monkeypatch):
+    """`edit_draft_via_chat` is a thin wrapper around `_commit_edit` — same
+    revise + re-send behavior as the keyboard's ✏️ flow, just without the
+    state-machine round-trip."""
+    from wire.drafting import drafter as drafter_mod
+    from wire.telegram import bot as bot_mod
+    from wire.telegram.handlers import edit_draft_via_chat
+
+    with db.session_scope() as sa:
+        d = Draft(text="LLM original")
+        sa.add(d)
+        sa.flush()
+        did = d.id
+
+    monkeypatch.setattr(drafter_mod, "revise_draft", AsyncMock(return_value="LLM revised"))
+    monkeypatch.setattr(bot_mod, "send_draft", AsyncMock(return_value=1))
+
+    update = _make_update_with_text("shorter", user_id=42)
+    ctx = _make_chat_context()
+    await edit_draft_via_chat(update, ctx, did, "shorter")
+
+    with db.session_scope() as sa:
+        d = sa.get(Draft, did)
+        assert d.text == "LLM revised"
+        assert d.original_text == "LLM original"
+
+
 @pytest.mark.asyncio
 async def test_text_message_empty_string_no_op(db, monkeypatch):
     from wire.telegram import handlers as hnd_mod

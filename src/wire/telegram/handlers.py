@@ -116,8 +116,63 @@ async def _on_approve(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_
     _record_post(draft_id, twitter_id=result.tweet_id, text=result.posted_text)
 
     url = getattr(result, "url", None)
+    log.info(
+        "wire.twitter.posted",
+        draft_id=draft_id,
+        tweet_id=str(result.tweet_id),
+        url=url,
+        was_revised=was_revised,
+    )
     msg = say("post_success_with_url", url=url) if url else say("post_success_no_url")
     await _reply(update, msg)
+
+
+# ---------------- chat-agent entry points -----------------------------------
+#
+# These wrap the inline-keyboard handlers above so the chat agent can drive
+# them from natural language ("publish that draft", "kill #51 too internal",
+# "make 52 shorter and ship it"). The chat agent calls these directly; the
+# state machine is bypassed (no edit-state required).
+
+
+async def approve_draft(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_id: int) -> None:
+    """Publish a pending draft to X — same code path as the ✅ Post button."""
+    await _on_approve(update, context, draft_id)
+
+
+async def reject_draft(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    draft_id: int,
+    reason: str,
+) -> None:
+    """Reject a pending draft with a reason. Mirrors the keyboard's reject
+    flow but skips the inline-button menu — the LLM has already extracted
+    the reason from natural language."""
+    if not _draft_exists(draft_id):
+        await _reply(update, say("draft_not_found"))
+        return
+    cleaned = (reason or "via_chat").strip()[:200] or "via_chat"
+    _record_decision(draft_id, decision="rejected", reject_reason=cleaned)
+    _set_status(draft_id, "rejected")
+    await _reply(update, say("rejected", reason=cleaned))
+
+
+async def edit_draft_via_chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    draft_id: int,
+    instruction: str,
+) -> None:
+    """Apply an NL revision instruction to a draft without going through
+    the ✏️ button + state-machine round-trip. Same revise → re-send flow
+    as `_commit_edit`."""
+    await _commit_edit(update, context, draft_id, instruction)
+
+
+def _draft_exists(draft_id: int) -> bool:
+    with db_session.session_scope() as sa:
+        return sa.get(Draft, draft_id) is not None
 
 
 def _finalize_decision(
