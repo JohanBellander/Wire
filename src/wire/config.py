@@ -191,6 +191,11 @@ class WireConfig(BaseModel):
 class RepoEntry(BaseModel):
     name: str
     visibility: Literal["public", "private"]
+    # Optional override for how the repo is shown to users and to the
+    # drafting LLM. Use this to restore intended casing that the GitHub
+    # API flattens — e.g. "medianalyzer" → "MediAnalyzer". When unset,
+    # `display_name_for()` falls back to capitalizing the first letter.
+    display_name: str | None = None
     notes: str = ""
 
     @field_validator("name")

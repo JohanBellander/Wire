@@ -183,42 +183,200 @@ async def test_reject_reason_other_enters_state(db):
         assert "too generic" in dec.reject_reason
 
 
-# ---------------- edit flow --------------------------------------------------
+# ---------------- NL edit (revision) flow ------------------------------------
+
+
+def _make_edit_context(*, revised_text: str, twitter=None, repo: str = "winetrackr") -> MagicMock:
+    """Context wired for the NL edit flow. Stubs the LLM provider so
+    `revise_draft` returns `revised_text`, and skips the actual Telegram
+    re-send by stubbing `send_draft`."""
+    ctx = MagicMock()
+    ctx.bot_data = {
+        "wire_chat_id": 1,
+        "wire_twitter": twitter,
+        "wire_config": MagicMock(),
+        "wire_provider": MagicMock(),
+        "wire_repos": MagicMock(),
+    }
+    ctx.bot.send_message = AsyncMock()
+    ctx.application = MagicMock()
+    return ctx
 
 
 @pytest.mark.asyncio
-async def test_edit_flow_records_diff_and_posts(db):
+async def test_edit_revision_replaces_text_and_lazy_fills_original(db, monkeypatch):
+    """First revision: original_text is NULL → gets filled with current text;
+    text is replaced with the LLM's revised version. No post happens here —
+    user must explicitly approve afterwards."""
     with db.session_scope() as sa:
         d = Draft(text="original wording")
         sa.add(d)
         sa.flush()
         did = d.id
 
+    from wire.drafting import drafter as drafter_mod
+    from wire.telegram import bot as bot_mod
+
+    fake_revise = AsyncMock(return_value="revised wording (shorter)")
+    monkeypatch.setattr(drafter_mod, "revise_draft", fake_revise)
+    fake_send = AsyncMock(return_value=12345)
+    monkeypatch.setattr(bot_mod, "send_draft", fake_send)
+
+    ctx = _make_edit_context(revised_text="revised wording (shorter)")
+    ctx.bot_data["wire_pending_state"] = {77: ("edit", did, 9999999999.0)}
+    text_update = _make_update_with_text("shorter", user_id=77)
+    await text_message_handler(text_update, ctx)
+
+    fake_revise.assert_awaited_once()
+    # First positional arg = current text
+    assert fake_revise.await_args.args[0] == "original wording"
+    # Second positional arg = the user instruction
+    assert fake_revise.await_args.args[1] == "shorter"
+
+    with db.session_scope() as sa:
+        d = sa.get(Draft, did)
+        assert d.text == "revised wording (shorter)"
+        assert d.original_text == "original wording"
+        # Status stays pending — the user hasn't approved yet.
+        assert d.status == "pending"
+        # No Decision row yet either.
+        assert sa.query(Decision).filter_by(draft_id=did).count() == 0
+
+    # Edit-state was popped, fresh draft was re-sent.
+    assert ctx.bot_data.get("wire_pending_state", {}).get(77) is None
+    fake_send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_edit_revision_iterates_keeps_first_original(db, monkeypatch):
+    """Second revision on the same draft must NOT overwrite original_text —
+    that field is for the first LLM draft only, so the learning block sees
+    'original → final' rather than 'previous-revision → final'."""
+    with db.session_scope() as sa:
+        d = Draft(text="LLM first try")
+        sa.add(d)
+        sa.flush()
+        did = d.id
+
+    from wire.drafting import drafter as drafter_mod
+    from wire.telegram import bot as bot_mod
+
+    revisions = ["second attempt", "third attempt"]
+    fake_revise = AsyncMock(side_effect=revisions)
+    monkeypatch.setattr(drafter_mod, "revise_draft", fake_revise)
+    monkeypatch.setattr(bot_mod, "send_draft", AsyncMock(return_value=1))
+
+    ctx = _make_edit_context(revised_text=revisions[0])
+    # First revision
+    ctx.bot_data["wire_pending_state"] = {77: ("edit", did, 9999999999.0)}
+    await text_message_handler(_make_update_with_text("shorter", user_id=77), ctx)
+    # Second revision (user taps Edit again)
+    ctx.bot_data["wire_pending_state"] = {77: ("edit", did, 9999999999.0)}
+    await text_message_handler(_make_update_with_text("drop the emoji", user_id=77), ctx)
+
+    with db.session_scope() as sa:
+        d = sa.get(Draft, did)
+        assert d.text == "third attempt"
+        # original_text is still the very first LLM draft.
+        assert d.original_text == "LLM first try"
+
+
+@pytest.mark.asyncio
+async def test_edit_revision_failure_surfaces_error_keeps_state(db, monkeypatch):
+    with db.session_scope() as sa:
+        d = Draft(text="something")
+        sa.add(d)
+        sa.flush()
+        did = d.id
+
+    from wire.drafting import drafter as drafter_mod
+
+    monkeypatch.setattr(
+        drafter_mod, "revise_draft", AsyncMock(side_effect=RuntimeError("provider died"))
+    )
+
+    ctx = _make_edit_context(revised_text="")
+    ctx.bot_data["wire_pending_state"] = {77: ("edit", did, 9999999999.0)}
+    text_update = _make_update_with_text("less hype", user_id=77)
+    await text_message_handler(text_update, ctx)
+
+    text_update.effective_message.reply_text.assert_awaited()
+    reply = text_update.effective_message.reply_text.await_args.args[0]
+    assert "provider died" in reply
+    # State preserved so the user can retry without re-tapping Edit.
+    state = ctx.bot_data["wire_pending_state"].get(77)
+    assert state is not None
+    assert state[0] == "edit"
+
+    # Draft text untouched.
+    with db.session_scope() as sa:
+        d = sa.get(Draft, did)
+        assert d.text == "something"
+        assert d.original_text is None
+
+
+@pytest.mark.asyncio
+async def test_approve_revised_draft_records_edited_decision(db, monkeypatch):
+    """Once a draft has a non-NULL `original_text` (i.e. the user revised
+    it through NL), approving it records decision='edited' with the diff
+    rather than a plain 'approved'."""
+    with db.session_scope() as sa:
+        d = Draft(text="final revised text", original_text="LLM first try")
+        sa.add(d)
+        sa.flush()
+        did = d.id
+
     fake_twitter = MagicMock()
     post_result = MagicMock()
-    post_result.tweet_id = "tw-9"
-    post_result.posted_text = "edited wording"
-    post_result.url = "https://x.com/user/status/tw-9"
+    post_result.tweet_id = "tw-1"
+    post_result.posted_text = "final revised text"
+    post_result.url = "https://x.com/u/status/1"
     fake_twitter.post = AsyncMock(return_value=post_result)
 
     ctx = _make_context(twitter=fake_twitter)
-    # Simulate /edit click → state set
-    ctx.bot_data["wire_pending_state"] = {77: ("edit", did, 9999999999.0)}
-    text_update = _make_update_with_text("edited wording", user_id=77)
-    await text_message_handler(text_update, ctx)
+    update = _make_update_with_callback(f"approve:{did}")
+    await _on_approve(update, ctx, did)
 
-    fake_twitter.post.assert_awaited_once_with("edited wording")
+    fake_twitter.post.assert_awaited_once_with("final revised text")
     with db.session_scope() as sa:
         d = sa.get(Draft, did)
         assert d.status == "edited"
         dec = sa.query(Decision).filter_by(draft_id=did).one()
         assert dec.decision == "edited"
-        assert dec.edited_text == "edited wording"
-        assert dec.edit_diff is not None
-        # Diff must be valid JSON
+        assert dec.edited_text == "final revised text"
+        # Diff is JSON-encoded and references both lengths.
         diff = json.loads(dec.edit_diff)
-        assert diff["before_len"] == len("original wording")
-        assert diff["after_len"] == len("edited wording")
+        assert diff["before_len"] == len("LLM first try")
+        assert diff["after_len"] == len("final revised text")
+
+
+@pytest.mark.asyncio
+async def test_approve_unrevised_draft_still_records_approved(db):
+    """Regression: a draft that was never revised (original_text NULL) still
+    records a plain decision='approved'."""
+    with db.session_scope() as sa:
+        d = Draft(text="straight from the LLM")
+        sa.add(d)
+        sa.flush()
+        did = d.id
+
+    fake_twitter = MagicMock()
+    post_result = MagicMock()
+    post_result.tweet_id = "tw-2"
+    post_result.posted_text = "straight from the LLM"
+    post_result.url = "https://x.com/u/status/2"
+    fake_twitter.post = AsyncMock(return_value=post_result)
+
+    ctx = _make_context(twitter=fake_twitter)
+    update = _make_update_with_callback(f"approve:{did}")
+    await _on_approve(update, ctx, did)
+
+    with db.session_scope() as sa:
+        d = sa.get(Draft, did)
+        assert d.status == "approved"
+        dec = sa.query(Decision).filter_by(draft_id=did).one()
+        assert dec.decision == "approved"
+        assert dec.edited_text is None
 
 
 # ---------------- expiry sweep -----------------------------------------------
@@ -532,3 +690,168 @@ async def test_draft_cmd_budget_paused(db, monkeypatch):
     text = update.effective_message.reply_text.await_args.args[0]
     assert "cap" in text.lower()
     assert "/extend" in text
+
+
+# ---------------- NL dispatch via text_message_handler ----------------------
+
+
+def _make_nl_context(twitter=None) -> MagicMock:
+    """Like _make_context but also wires wire_config + wire_provider so the
+    NL classifier can run."""
+    ctx = MagicMock()
+    ctx.bot_data = {
+        "wire_chat_id": 1,
+        "wire_twitter": twitter,
+        "wire_config": MagicMock(),
+        "wire_provider": MagicMock(),
+        "wire_repos": MagicMock(),
+    }
+    ctx.bot.send_message = AsyncMock()
+    return ctx
+
+
+def _stub_classify(monkeypatch, intent: str, args: dict | None = None) -> None:
+    """Patch `intent.classify` to return a canned ClassifiedIntent without
+    hitting any LLM."""
+    from wire.telegram import handlers as hnd_mod
+    from wire.telegram.intent import ClassifiedIntent
+
+    async def _fake(text, cfg, provider):
+        return ClassifiedIntent(intent=intent, args=args or {}, confidence=0.9)
+
+    monkeypatch.setattr(hnd_mod.intent_mod, "classify", _fake)
+
+
+@pytest.mark.asyncio
+async def test_nl_dispatch_status_calls_status_cmd(db, monkeypatch):
+    _stub_classify(monkeypatch, "status")
+    fake_status = AsyncMock()
+    monkeypatch.setattr(cmds, "status_cmd", fake_status)
+
+    update = _make_update_with_text("how are you doing")
+    ctx = _make_nl_context()
+    await text_message_handler(update, ctx)
+
+    fake_status.assert_awaited_once()
+    # context.args is the empty list for arg-less intents.
+    assert ctx.args == []
+
+
+@pytest.mark.asyncio
+async def test_nl_dispatch_extend_passes_amount_arg(db, monkeypatch):
+    _stub_classify(monkeypatch, "extend", args={"usd": 25})
+    fake_extend = AsyncMock()
+    monkeypatch.setattr(cmds, "extend_cmd", fake_extend)
+
+    update = _make_update_with_text("extend by 25")
+    ctx = _make_nl_context()
+    await text_message_handler(update, ctx)
+
+    fake_extend.assert_awaited_once()
+    assert ctx.args == ["25"]
+
+
+@pytest.mark.asyncio
+async def test_nl_dispatch_last_passes_n_arg(db, monkeypatch):
+    _stub_classify(monkeypatch, "last", args={"n": 15})
+    fake_last = AsyncMock()
+    monkeypatch.setattr(cmds, "last_cmd", fake_last)
+
+    update = _make_update_with_text("show me last 15 events")
+    ctx = _make_nl_context()
+    await text_message_handler(update, ctx)
+
+    fake_last.assert_awaited_once()
+    assert ctx.args == ["15"]
+
+
+@pytest.mark.asyncio
+async def test_nl_dispatch_draft_requires_event_id(db, monkeypatch):
+    """draft intent without an event_id arg falls through to intent_unknown
+    rather than calling draft_cmd with empty args."""
+    _stub_classify(monkeypatch, "draft", args={})
+    fake_draft = AsyncMock()
+    monkeypatch.setattr(cmds, "draft_cmd", fake_draft)
+
+    update = _make_update_with_text("force a draft")
+    ctx = _make_nl_context()
+    await text_message_handler(update, ctx)
+
+    fake_draft.assert_not_awaited()
+    update.effective_message.reply_text.assert_awaited()
+    reply = update.effective_message.reply_text.await_args.args[0]
+    assert "/help" in reply or "?" in reply or "didn't" in reply.lower() or "noisy" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_nl_dispatch_unknown_replies_with_fallback(db, monkeypatch):
+    _stub_classify(monkeypatch, "unknown")
+    update = _make_update_with_text("hi wire what time is it")
+    ctx = _make_nl_context()
+    await text_message_handler(update, ctx)
+
+    update.effective_message.reply_text.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_state_machine_wins_over_nl_dispatch(db, monkeypatch):
+    """If the user is mid-edit, their next text is the edit instruction —
+    not an intent. The classifier must NOT be called."""
+    with db.session_scope() as sa:
+        d = Draft(text="original")
+        sa.add(d)
+        sa.flush()
+        did = d.id
+
+    fake_twitter = MagicMock()
+    post_result = MagicMock()
+    post_result.tweet_id = "tw-9"
+    post_result.posted_text = "rewritten"
+    post_result.url = "https://x.com/user/status/tw-9"
+    fake_twitter.post = AsyncMock(return_value=post_result)
+
+    classify_called = False
+
+    async def _spy_classify(text, cfg, provider):
+        nonlocal classify_called
+        classify_called = True
+        from wire.telegram.intent import ClassifiedIntent
+
+        return ClassifiedIntent(intent="status", args={}, confidence=1.0)
+
+    from wire.telegram import handlers as hnd_mod
+
+    monkeypatch.setattr(hnd_mod.intent_mod, "classify", _spy_classify)
+
+    ctx = _make_nl_context(twitter=fake_twitter)
+    ctx.bot_data["wire_pending_state"] = {77: ("edit", did, 9999999999.0)}
+    update = _make_update_with_text("rewritten", user_id=77)
+    await text_message_handler(update, ctx)
+
+    # State machine intercepted — classifier never ran.
+    assert classify_called is False
+
+
+@pytest.mark.asyncio
+async def test_nl_dispatch_ignores_other_chats(db, monkeypatch):
+    """The NL handler must not act on text from chats outside the
+    configured one — even if the message looks like a valid intent."""
+    classify_called = False
+
+    async def _spy(text, cfg, provider):
+        nonlocal classify_called
+        classify_called = True
+        from wire.telegram.intent import ClassifiedIntent
+
+        return ClassifiedIntent(intent="status", args={}, confidence=1.0)
+
+    from wire.telegram import handlers as hnd_mod
+
+    monkeypatch.setattr(hnd_mod.intent_mod, "classify", _spy)
+
+    ctx = _make_nl_context()
+    update = _make_update_with_text("status", chat_id=999)  # wrong chat id
+    await text_message_handler(update, ctx)
+
+    assert classify_called is False
+    update.effective_message.reply_text.assert_not_awaited()

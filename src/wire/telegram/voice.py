@@ -46,8 +46,18 @@ PHRASES: dict[str, list[str]] = {
     ],
     # ---- edit -----------------------------------------------------------
     "edit_prompt": [
-        "send the rewrite, johan. 10min on the clock.",
-        "go ahead. 10min window.",
+        "describe the change — 'shorter', 'less hype', 'drop the emoji'. 10min window.",
+        "what should change? 'shorter', 'no emoji', 'less hype' — i'll rewrite. 10min.",
+        "tell me what to fix. plain english. 10min on the clock.",
+    ],
+    "edit_revised": [
+        "✏️ rewritten. take another look.",
+        "✏️ here's the rewrite — your call.",
+        "✏️ revision below. ✅ to ship, ✏️ to keep tweaking.",
+    ],
+    "edit_revision_failed": [
+        "revision didn't land: {error}. try again or ❌ to kill it.",
+        "couldn't rewrite: {error}. send another instruction or reject.",
     ],
     "edit_success_with_url": [
         "✏️ edited and live. {url}",
@@ -198,20 +208,32 @@ PHRASES: dict[str, list[str]] = {
     "digest_closer_fallback": [
         "that's the week on the wire.",
     ],
+    # ---- intent classifier fallback ------------------------------------
+    "intent_unknown": [
+        "didn't catch that, johan. /help for the menu.",
+        "signal's noisy — try /help.",
+        "not sure what you meant. /help shows what i listen for.",
+    ],
     # ---- /help cheat-sheet (single template, no variation) -------------
     "help_text": [
         "wire — build-in-public bot\n"
-        "draft messages have buttons: ✅ post · ✏️ edit · ❌ reject · 💤 save\n\n"
-        "/status              bot health\n"
-        "/budget              spend vs cap\n"
-        "/pause [hours]       pause drafting\n"
-        "/resume              resume drafting\n"
-        "/saved               list saved drafts\n"
-        "/digest              force-send weekly digest\n"
-        "/repos               list allowlisted repos\n"
-        "/extend [usd]        raise monthly cap by N (default 5)\n"
-        "/last [n]            last N events with triage + outcome\n"
-        "/draft <event_id>    force a draft for a specific event"
+        "talk to me in plain english — i'll figure it out.\n\n"
+        "things you can say:\n"
+        "  status                       bot health, queue, pause state\n"
+        "  budget / how's the budget    spend vs cap\n"
+        "  resume / wake up             resume drafting after a pause\n"
+        "  saved / show saved drafts    list parked drafts\n"
+        "  digest / send the digest     force-send weekly digest\n"
+        "  repos / list repos           list allowlisted repos\n"
+        "  extend [by N usd]            raise monthly cap by N (default 5)\n"
+        "  last [n]                     last N events with triage + outcome\n"
+        "  draft <event_id>             force a draft for a specific event\n\n"
+        "always-available slash commands:\n"
+        "  /pause [hours]               pause drafting (kill switch)\n"
+        "  /help                        this menu\n\n"
+        "draft messages have buttons: ✅ post · ✏️ edit · ❌ reject · 💤 save\n"
+        "after ✏️ edit, describe the change — 'shorter', 'less hype', "
+        "'drop the emoji'. i'll rewrite it."
     ],
 }
 

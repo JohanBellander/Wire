@@ -261,10 +261,16 @@ def test_prompt_blocks_contain_all_sections(db):
     assert "Recent decisions" in sys_text
     assert "REJECTED" in sys_text
     assert "boring" in sys_text
+    # The "developer friend" mental-model framing must survive into the
+    # loaded system prompt — guards against accidental deletion.
+    assert "developer friend" in sys_text or "developer-friend" in sys_text
 
     # User message body
     user = blocks.user_message
-    assert "Repo: winetrackr (public)" in user
+    # Repo name is capitalized for display (winetrackr → Winetrackr); see
+    # `wire.util.repo_names.display_name_for`. Per-repo overrides land via
+    # `RepoEntry.display_name` in repos.yaml.
+    assert "Repo: Winetrackr (public)" in user
     assert "Repo notes: Public side project" in user
     assert "Closed reason: idle" in user
     assert "feat: ship a thing" in user
@@ -415,7 +421,7 @@ def test_prompt_includes_readme_when_cached(db):
     # Three system blocks now: system+voice, about-this-repo, learning
     assert len(blocks.system_blocks) == 3
     sys_text = "\n".join(b["text"] for b in blocks.system_blocks)
-    assert "About winetrackr" in sys_text
+    assert "About Winetrackr" in sys_text  # display-name capitalized
     assert "wine cellar tracker" in sys_text
     # README block has 1h cache (same as system+voice)
     repo_block = blocks.system_blocks[1]
@@ -455,6 +461,7 @@ def test_prompt_omits_readme_block_when_not_cached(db):
     blocks = build_prompt_blocks(s, cfg, repos)
     assert len(blocks.system_blocks) == 2
     sys_text = "\n".join(b["text"] for b in blocks.system_blocks)
+    assert "About Winetrackr" not in sys_text
     assert "About winetrackr" not in sys_text
 
 

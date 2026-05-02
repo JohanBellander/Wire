@@ -19,9 +19,14 @@ import structlog
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from wire.config import ReposFile, WireConfig
 from wire.db import session as db_session
 from wire.db.models import Decision, Draft, Post, utc_now
+from wire.db.models import Session as SessionRow
+from wire.telegram import commands as cmds
+from wire.telegram import intent as intent_mod
 from wire.telegram.voice import say
+from wire.util.repo_names import display_name_for
 
 log = structlog.get_logger()
 
@@ -89,15 +94,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def _on_approve(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_id: int) -> None:
     twitter = context.bot_data.get("wire_twitter")
-    text = _draft_text(draft_id)
-    if text is None:
+    snap = _draft_snapshot(draft_id)
+    if snap is None:
         await _reply(update, say("draft_not_found"))
         return
+    text, original_text = snap
+    was_revised = original_text is not None and original_text != text
 
     if twitter is None:
         await _reply(update, say("post_dry_run"))
-        _record_decision(draft_id, decision="approved")
-        _set_status(draft_id, "approved")
+        _finalize_decision(draft_id, was_revised, original_text, text)
         return
 
     try:
@@ -107,13 +113,35 @@ async def _on_approve(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_
         await _reply(update, say("post_failed", error=str(e)))
         return
 
-    _record_decision(draft_id, decision="approved")
-    _set_status(draft_id, "approved")
+    _finalize_decision(draft_id, was_revised, original_text, text)
     _record_post(draft_id, twitter_id=result.tweet_id, text=result.posted_text)
 
     url = getattr(result, "url", None)
     msg = say("post_success_with_url", url=url) if url else say("post_success_no_url")
     await _reply(update, msg)
+
+
+def _finalize_decision(
+    draft_id: int,
+    was_revised: bool,
+    original_text: str | None,
+    final_text: str,
+) -> None:
+    """If the draft text was revised via the NL edit flow, record the
+    decision as 'edited' (with diff) so the recent-decisions learning block
+    sees the iteration. Otherwise record a plain 'approved'."""
+    if was_revised and original_text is not None:
+        diff_json = json.dumps(_diff_opcodes(original_text, final_text))
+        _record_decision(
+            draft_id,
+            decision="edited",
+            edited_text=final_text,
+            edit_diff=diff_json,
+        )
+        _set_status(draft_id, "edited")
+    else:
+        _record_decision(draft_id, decision="approved")
+        _set_status(draft_id, "approved")
 
 
 # ---------------- reject -----------------------------------------------------
@@ -170,62 +198,176 @@ async def _on_save(update: Update, context: ContextTypes.DEFAULT_TYPE, draft_id:
 
 
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Free-text reply: dispatch to the right state, if any."""
+    """Free-text reply.
+
+    Order of dispatch — do not reorder:
+      1. State machine (edit / reject_other) wins. If the user just tapped
+         ✏️ Edit, their next message is the revision instruction, not an
+         intent.
+      2. Authorization check — only the configured chat is allowed past the
+         state-machine gate.
+      3. NL intent classification + dispatch via `intent_mod.classify`.
+    """
     user = update.effective_user
     if user is None or update.message is None or update.message.text is None:
         return
-    state = _peek_state(context, user.id)
-    if state is None:
-        return  # not in any waiting state — ignore
-
-    kind, draft_id, _deadline = state
     text = update.message.text.strip()
+    if not text:
+        return
 
-    if kind == "edit":
-        await _commit_edit(update, context, draft_id, text)
-    elif kind == "reject_other":
-        _pop_state(context, user.id)
-        _record_decision(draft_id, decision="rejected", reject_reason=f"other:{text[:200]}")
-        _set_status(draft_id, "rejected")
-        await _reply(update, say("rejected_custom"))
+    # Pending state wins (edit revision or "other" reject reason).
+    state = _peek_state(context, user.id)
+    if state is not None:
+        kind, draft_id, _deadline = state
+        if kind == "edit":
+            await _commit_edit(update, context, draft_id, text)
+            return
+        if kind == "reject_other":
+            _pop_state(context, user.id)
+            _record_decision(draft_id, decision="rejected", reject_reason=f"other:{text[:200]}")
+            _set_status(draft_id, "rejected")
+            await _reply(update, say("rejected_custom"))
+            return
+
+    # Auth check — same gate the slash commands use; protects NL dispatch
+    # from any chat the bot might be added to by accident.
+    expected_chat_id = context.bot_data.get("wire_chat_id")
+    chat = update.effective_chat
+    if chat is None or expected_chat_id is None or chat.id != expected_chat_id:
+        return
+
+    cfg: WireConfig | None = context.bot_data.get("wire_config")
+    provider = context.bot_data.get("wire_provider")
+    if cfg is None:
+        # Bot wasn't wired with full config — silent no-op (matches old
+        # behavior for unrecognized free text).
+        return
+
+    classified = await intent_mod.classify(text, cfg, provider)
+    await _dispatch_intent(classified, update, context)
+
+
+async def _dispatch_intent(
+    classified: intent_mod.ClassifiedIntent,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Route a classified intent to the matching slash-command handler.
+
+    Each `cmds.*_cmd` reads `context.args` for arguments, so we set that
+    list before dispatching. The handler itself enforces the chat-id auth
+    check independently.
+    """
+    intent = classified.intent
+    args = classified.args or {}
+
+    if intent == "status":
+        context.args = []
+        await cmds.status_cmd(update, context)
+    elif intent == "budget":
+        context.args = []
+        await cmds.budget_cmd(update, context)
+    elif intent == "resume":
+        context.args = []
+        await cmds.resume_cmd(update, context)
+    elif intent == "saved":
+        context.args = []
+        await cmds.saved_cmd(update, context)
+    elif intent == "digest":
+        context.args = []
+        await cmds.digest_cmd(update, context)
+    elif intent == "repos":
+        context.args = []
+        await cmds.repos_cmd(update, context)
+    elif intent == "help":
+        context.args = []
+        await cmds.help_cmd(update, context)
+    elif intent == "extend":
+        usd = args.get("usd")
+        context.args = [str(usd)] if usd is not None else []
+        await cmds.extend_cmd(update, context)
+    elif intent == "last":
+        n = args.get("n")
+        context.args = [str(n)] if n is not None else []
+        await cmds.last_cmd(update, context)
+    elif intent == "draft":
+        event_id = args.get("event_id")
+        if event_id is None:
+            await _reply(update, say("intent_unknown"))
+            return
+        context.args = [str(event_id)]
+        await cmds.draft_cmd(update, context)
+    else:
+        # unknown / draft_revise outside an edit-state / anything else.
+        await _reply(update, say("intent_unknown"))
 
 
 async def _commit_edit(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     draft_id: int,
-    edited_text: str,
+    instruction: str,
 ) -> None:
+    """NL revision: the user describes what to change ('shorter',
+    'drop the emoji'); the LLM rewrites the draft. The user iterates by
+    tapping ✏️ Edit again. Approval is a separate button click — this
+    function does NOT post to X."""
+    from wire.drafting.drafter import revise_draft
+
+    snap = _draft_snapshot(draft_id)
+    if snap is None:
+        # Pop state — no point holding an edit-state on a missing draft.
+        user = update.effective_user
+        if user is not None:
+            _pop_state(context, user.id)
+        await _reply(update, say("draft_not_found"))
+        return
+    current_text, _existing_original = snap
+
+    repos: ReposFile | None = context.bot_data.get("wire_repos")
+    repo_raw = _draft_repo(draft_id)
+    repo_display = display_name_for(repo_raw, repos) if repo_raw else "?"
+
+    cfg: WireConfig | None = context.bot_data.get("wire_config")
+    provider = context.bot_data.get("wire_provider")
+    if cfg is None or provider is None:
+        # Provider not wired — this surface needs the LLM. Don't pop state
+        # so the user can retry once it's restored.
+        await _reply(update, say("edit_revision_failed", error="llm not wired"))
+        return
+
+    try:
+        revised = await revise_draft(
+            current_text,
+            instruction,
+            repo_display=repo_display,
+            provider=provider,
+        )
+    except Exception as e:  # noqa: BLE001 — surface to user, keep edit-state alive
+        log.warning("wire.telegram.revise_failed", draft_id=draft_id, error=str(e))
+        await _reply(update, say("edit_revision_failed", error=str(e)))
+        return
+
+    # Lazy-fill original_text on first revision; replace working text.
+    _apply_revision(draft_id, revised)
+
+    # Edit successful → exit edit-state. The user taps ✏️ again on the
+    # newly-sent draft to iterate further.
     user = update.effective_user
     if user is not None:
         _pop_state(context, user.id)
 
-    original = _draft_text(draft_id)
-    if original is None:
-        await _reply(update, say("draft_not_found"))
-        return
+    await _reply(update, say("edit_revised"))
 
-    diff_json = json.dumps(_diff_opcodes(original, edited_text))
-    twitter = context.bot_data.get("wire_twitter")
-    if twitter is None:
-        _record_decision(draft_id, decision="edited", edited_text=edited_text, edit_diff=diff_json)
-        _set_status(draft_id, "edited")
-        await _reply(update, say("edit_dry_run"))
-        return
-
+    # Re-send the draft so it appears with a fresh approve/edit/reject
+    # keyboard. The previous message stays as conversation history.
     try:
-        result = await twitter.post(edited_text)
-    except Exception as e:
-        log.exception("wire.twitter.edit_post_failed", draft_id=draft_id, error=str(e))
-        await _reply(update, say("edit_post_failed", error=str(e)))
-        return
+        from wire.telegram.bot import send_draft
 
-    _record_decision(draft_id, decision="edited", edited_text=edited_text, edit_diff=diff_json)
-    _set_status(draft_id, "edited")
-    _record_post(draft_id, twitter_id=result.tweet_id, text=result.posted_text)
-    url = getattr(result, "url", None)
-    msg = say("edit_success_with_url", url=url) if url else say("edit_success_no_url")
-    await _reply(update, msg)
+        if context.application is not None:
+            await send_draft(context.application, draft_id)
+    except Exception:
+        log.exception("wire.telegram.revise_send_failed", draft_id=draft_id)
 
 
 def _diff_opcodes(before: str, after: str) -> dict:
@@ -251,6 +393,38 @@ def _draft_text(draft_id: int) -> str | None:
     with db_session.session_scope() as sa:
         d = sa.get(Draft, draft_id)
         return d.text if d else None
+
+
+def _draft_snapshot(draft_id: int) -> tuple[str, str | None] | None:
+    """Return (current_text, original_text) for `draft_id`, or None if the
+    draft is missing. `original_text` is NULL on drafts that have never
+    been revised through the NL edit flow."""
+    with db_session.session_scope() as sa:
+        d = sa.get(Draft, draft_id)
+        if d is None:
+            return None
+        return d.text, d.original_text
+
+
+def _draft_repo(draft_id: int) -> str | None:
+    """Lookup the repo string for the session that owns this draft."""
+    with db_session.session_scope() as sa:
+        d = sa.get(Draft, draft_id)
+        if d is None or d.session_id is None:
+            return None
+        sess = sa.get(SessionRow, d.session_id)
+        return sess.repo if sess else None
+
+
+def _apply_revision(draft_id: int, revised: str) -> None:
+    """Lazy-fill `original_text` on first revision, then replace `text`."""
+    with db_session.session_scope() as sa:
+        d = sa.get(Draft, draft_id)
+        if d is None:
+            return
+        if d.original_text is None:
+            d.original_text = d.text
+        d.text = revised
 
 
 def _set_status(draft_id: int, status: str) -> None:

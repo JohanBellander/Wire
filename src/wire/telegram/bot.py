@@ -31,6 +31,7 @@ from wire.telegram import commands as cmds
 from wire.telegram import handlers as hnd
 from wire.telegram import persona as persona_mod
 from wire.telegram.voice import say
+from wire.util.repo_names import display_name_for
 
 log = structlog.get_logger()
 
@@ -71,24 +72,19 @@ def build_application(
     app.bot_data["wire_twitter"] = twitter_poster
     app.bot_data["wire_provider"] = provider
 
-    # Slash commands
-    app.add_handler(CommandHandler("status", cmds.status_cmd))
-    app.add_handler(CommandHandler("budget", cmds.budget_cmd))
+    # Only safety-critical slash commands stay as slashes — /pause is an
+    # always-available kill switch and /help is the discoverable cheat-sheet.
+    # Everything else (status, budget, resume, saved, digest, repos, extend,
+    # last, draft) routes through `text_message_handler`'s NL intent classifier.
     app.add_handler(CommandHandler("pause", cmds.pause_cmd))
-    app.add_handler(CommandHandler("resume", cmds.resume_cmd))
-    app.add_handler(CommandHandler("saved", cmds.saved_cmd))
-    app.add_handler(CommandHandler("digest", cmds.digest_cmd))
-    app.add_handler(CommandHandler("repos", cmds.repos_cmd))
-    app.add_handler(CommandHandler("extend", cmds.extend_cmd))
-    app.add_handler(CommandHandler("last", cmds.last_cmd))
-    app.add_handler(CommandHandler("draft", cmds.draft_cmd))
     app.add_handler(CommandHandler("help", cmds.help_cmd))
     app.add_handler(CommandHandler("start", cmds.help_cmd))
 
     # Inline keyboard callbacks: approve/edit/reject/save + reject reasons
     app.add_handler(CallbackQueryHandler(hnd.callback_handler))
 
-    # Free-text replies — used by the edit flow's state machine
+    # Free-text replies — state machine (edit / reject_other) wins, otherwise
+    # NL intent classification + dispatch.
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, hnd.text_message_handler))
 
     return app
@@ -150,19 +146,21 @@ async def send_draft(app: Application, draft_id: int) -> int:
     """Send one draft to the configured chat. Returns the telegram_message_id
     so we can update the row."""
     chat_id: int = app.bot_data["wire_chat_id"]
+    repos: ReposFile | None = app.bot_data.get("wire_repos")
 
     with db_session.session_scope() as sa:
         d = sa.get(Draft, draft_id)
         if d is None:
             raise ValueError(f"Draft {draft_id} not found")
-        repo = "?"
+        repo_raw = "?"
         if d.session_id is not None:
             sess = sa.get(Session, d.session_id)
             if sess is not None:
-                repo = sess.repo
+                repo_raw = sess.repo
         text = d.text
         reasoning = d.reasoning or ""
 
+    repo = display_name_for(repo_raw, repos) if repo_raw != "?" else "?"
     rendered = render_thread_for_telegram(text)
     header = say("draft_header", draft_id=draft_id, repo=repo)
 

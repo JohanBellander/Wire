@@ -102,6 +102,8 @@ CALLER_KWARGS: dict[str, dict[str, object]] = {
     "post_failed": {"error": "boom"},
     "post_dry_run": {},
     "edit_prompt": {},
+    "edit_revised": {},
+    "edit_revision_failed": {"error": "boom"},
     "edit_success_with_url": {"url": "u"},
     "edit_success_no_url": {},
     "edit_dry_run": {},
@@ -144,6 +146,7 @@ CALLER_KWARGS: dict[str, dict[str, object]] = {
     "digest_opener_fallback": {},
     "digest_closer_fallback": {},
     "help_text": {},
+    "intent_unknown": {},
 }
 
 
