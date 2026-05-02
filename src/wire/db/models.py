@@ -78,6 +78,10 @@ class Draft(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id"))
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    # The very first LLM-generated text, captured the moment the user kicks
+    # off the first revision via NL edit. Stays NULL on drafts that were
+    # never revised (so the legacy approve path can read NULL → unchanged).
+    original_text: Mapped[str | None] = mapped_column(Text)
     reasoning: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     telegram_message_id: Mapped[int | None] = mapped_column(Integer)

@@ -40,6 +40,7 @@ from wire.llm.budget import compute_status
 from wire.llm.budget import log_llm_call as _log_llm_call
 from wire.llm.caching import text_block
 from wire.llm.provider import LLMError, LLMProvider, parse_json_lenient
+from wire.util.repo_names import display_name_for
 
 log = structlog.get_logger()
 
@@ -62,6 +63,10 @@ def _system_prompt() -> str:
     return (PROMPTS_DIR / "drafting.txt").read_text(encoding="utf-8")
 
 
+def _revision_prompt() -> str:
+    return (PROMPTS_DIR / "edit_revision.txt").read_text(encoding="utf-8")
+
+
 # --- pydantic schemas --------------------------------------------------------
 
 
@@ -74,6 +79,12 @@ class DraftItem(BaseModel):
 class DraftResponse(BaseModel):
     skip_reason: str | None = None
     drafts: list[DraftItem] = Field(default_factory=list)
+
+
+class RevisionResponse(BaseModel):
+    """Schema for `revise_draft` — a single revised draft text."""
+
+    text: str = Field(min_length=1)
 
 
 # --- quiet hours -------------------------------------------------------------
@@ -142,14 +153,19 @@ def _format_event_line(e: Event) -> str:
     return " ".join(bits)
 
 
-def _format_session_events(session: Session, repo_notes: str, repo_visibility: str) -> str:
+def _format_session_events(
+    session: Session,
+    repo_notes: str,
+    repo_visibility: str,
+    repo_display: str,
+) -> str:
     duration = ""
     if session.ended_at and session.started_at:
         d = session.ended_at - session.started_at
         duration = f"{d.total_seconds() / 60:.0f} min"
     lines = [
         "─── Session events ───",
-        f"Repo: {session.repo} ({repo_visibility})",
+        f"Repo: {repo_display} ({repo_visibility})",
         f"Repo notes: {repo_notes}",
         f"Session duration: {duration}",
         f"Closed reason: {session.closed_reason or 'open'}",
@@ -213,15 +229,21 @@ def _recent_decisions(sa, n: int) -> str:
     lines = []
     for d in rows:
         draft_text = ""
+        original_text = ""
         if d.draft is not None:
             draft_text = d.draft.text[:200]
+            # NL-edit flow: Draft.text holds the revised final text and
+            # Draft.original_text holds the LLM's first try. Show the
+            # original on the "before" side of the EDITED arrow so the
+            # learning block reflects what the user pushed away from.
+            original_text = (d.draft.original_text or d.draft.text)[:200]
         if d.decision == "approved":
             lines.append(f'✅ APPROVED: "{draft_text}"')
         elif d.decision == "rejected":
             lines.append(f'❌ REJECTED: "{draft_text}" — reason: "{d.reject_reason or "?"}"')
         elif d.decision == "edited":
             edited = (d.edited_text or "")[:200]
-            lines.append(f'✏️ EDITED: "{draft_text}" → "{edited}"')
+            lines.append(f'✏️ EDITED: "{original_text}" → "{edited}"')
     return "\n".join(lines)
 
 
@@ -274,6 +296,7 @@ def build_prompt_blocks(
     repo_entry = repos_file.get(session.repo)
     repo_notes = repo_entry.notes if repo_entry else ""
     repo_visibility = repo_entry.visibility if repo_entry else "?"
+    repo_display = display_name_for(session.repo, repos_file)
 
     with db_session.session_scope() as sa:
         voice = _voice_profile_text(sa)
@@ -289,7 +312,7 @@ def build_prompt_blocks(
     repo_block_text: str | None = None
     if readme:
         repo_block_text = (
-            f"─── About {session.repo} ───\n"
+            f"─── About {repo_display} ───\n"
             "(Auto-extracted from the repo's README, for context. Use it to "
             "understand what the project does; do not quote it verbatim.)\n\n"
             f"{readme}"
@@ -317,7 +340,7 @@ def build_prompt_blocks(
         )
     system_blocks.append(text_block(learning_text, cache_ttl="5m" if cached_caching else None))
 
-    user_message = _format_session_events(session, repo_notes, repo_visibility)
+    user_message = _format_session_events(session, repo_notes, repo_visibility, repo_display)
 
     return PromptBlocks(system_blocks=system_blocks, user_message=user_message)
 
@@ -457,6 +480,44 @@ async def draft_pending_sessions(
 
 
 _FORCED_REASONING_PREFIX = "[forced via /draft] "
+
+
+# --- revise_draft (NL edit flow) ---------------------------------------------
+
+
+async def revise_draft(
+    original_text: str,
+    instruction: str,
+    *,
+    repo_display: str,
+    provider: LLMProvider,
+) -> str:
+    """Revise an existing draft according to a short user instruction.
+
+    Routes through `provider.complete(task="drafting", ...)` so revisions
+    use the same provider chain as the initial draft (local model first,
+    Claude fallback). The caller surfaces failures to the Telegram user;
+    we just raise `LLMError` (or its subclasses) on any provider problem.
+    """
+    system = _revision_prompt()
+    user = (
+        f"Repo (preserve casing): {repo_display}\n"
+        f"Original draft:\n{original_text}\n\n"
+        f'User instruction: "{instruction}"\n\n'
+        'Respond as JSON: {"text": "<revised draft>"}.'
+    )
+
+    resp = await provider.complete(
+        task="drafting",
+        system=system,
+        messages=[{"role": "user", "content": user}],
+        response_format=RevisionResponse,
+        max_tokens=600,
+    )
+    _log_llm_call(resp)
+
+    parsed = RevisionResponse.model_validate(parse_json_lenient(resp.content))
+    return parsed.text.strip()
 
 
 async def force_draft_for_event(

@@ -34,6 +34,7 @@ from wire.events.format import format_event_message
 from wire.health import get_state as get_health_state
 from wire.llm.budget import compute_fallback_stats, compute_status, record_extension
 from wire.telegram.voice import say
+from wire.util.repo_names import display_name_for
 
 log = structlog.get_logger()
 
@@ -238,7 +239,8 @@ async def repos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     lines = [say("repos_header")]
     for r in repos.repos:
-        lines.append(f"- {r.name}  ({r.visibility})  {r.notes}")
+        display = display_name_for(r.name, repos)
+        lines.append(f"- {display}  ({r.visibility})  {r.notes}")
     await _reply(update, "\n".join(lines))
 
 
@@ -325,6 +327,7 @@ async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
     n = max(1, min(n, 50))
 
+    repos: ReposFile | None = context.bot_data.get("wire_repos")
     with db_session.session_scope() as sa:
         events = (
             sa.execute(select(Event).order_by(desc(Event.occurred_at)).limit(n)).scalars().all()
@@ -338,7 +341,8 @@ async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             msg = format_event_message(e)
             snippet = f' "{msg[:60]}"' if msg else ""
             outcome = _outcome_for_event(sa, e)
-            lines.append(f"[{e.id}] {e.repo}/{e.event_type}{snippet} triage={score} → {outcome}")
+            display = display_name_for(e.repo, repos)
+            lines.append(f"[{e.id}] {display}/{e.event_type}{snippet} triage={score} → {outcome}")
     await _reply(update, "\n".join(lines))
 
 
