@@ -124,8 +124,12 @@ def _format_brain(cfg: WireConfig, health, fb) -> str:
     if cfg.llm.provider == "claude":
         primary_label = f"claude (drafting={cfg.llm.claude.drafting})"
         return f"{header}\nprimary:  {primary_label}\nfallback: (none — claude only)"
-    # provider == ollama → fallback to claude
-    primary_label = f"ollama ({cfg.llm.ollama.model})"
+    # provider == ollama / llamacpp → fallback to claude
+    if cfg.llm.provider == "llamacpp":
+        assert cfg.llm.llamacpp is not None
+        primary_label = f"llamacpp ({cfg.llm.llamacpp.model})"
+    else:
+        primary_label = f"ollama ({cfg.llm.ollama.model})"
     fallback_label = f"claude ({cfg.llm.claude.drafting} / {cfg.llm.claude.triage})"
     last_used = health.last_used_provider or "(no calls yet)"
     rate_pct = fb.fallback_rate * 100

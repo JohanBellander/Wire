@@ -12,7 +12,7 @@ repos:
   config_path: /data/repos.yaml
 
 llm:
-  provider: claude                # claude | ollama
+  provider: claude                # claude | ollama | llamacpp
   ollama:
     base_url: http://192.168.1.50:11434
     model: qwen3.5:9b
@@ -27,6 +27,18 @@ llm:
     # extra_options:
     #   top_p: 0.95
     #   seed: 42
+  # llamacpp is for any OpenAI-compatible HTTP backend: llama.cpp's built-in
+  # server, vLLM, OpenRouter, etc. base_url MUST include the /v1 segment.
+  # Bearer auth is read from the env var named in api_key_env (set in Coolify
+  # or .env, NOT in this file). Leave the env var empty for unauth'd local servers.
+  # llamacpp:
+  #   base_url: https://llm.example.com/v1
+  #   model: qwen3-coder-next
+  #   timeout_seconds: 90
+  #   api_key_env: LLM_API_KEY
+  #   temperature: 0.5
+  #   extra_options:
+  #     top_p: 0.95
   claude:
     # Used directly when provider=claude, OR as fallback when provider=ollama
     drafting: claude-sonnet-4-6
