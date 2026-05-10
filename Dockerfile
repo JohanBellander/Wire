@@ -6,6 +6,9 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Upgrade pip to address CVE-2026-6357. CVE-2025-8869 N/A on Python 3.12 (PEP 706).
+RUN pip install --no-cache-dir --upgrade "pip>=26.1"
+
 RUN pip install --no-cache-dir uv
 
 # Install runtime deps first (without the project itself) — this layer is
