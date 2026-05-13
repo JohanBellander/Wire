@@ -4,11 +4,11 @@ Operational guide for Claude Code working in this repo. Read this first.
 
 ## What Wire is
 
-A self-hosted bot that watches a configured GitHub org, drafts X/Twitter posts about post-worthy activity using Claude (with optional Ollama primary + Claude fallback), gates everything behind Telegram approval, and learns from approve/reject/edit decisions plus post performance via prompt context. Single user, single X account, single GitHub org. Single Docker container deployed via Coolify.
+A self-hosted bot that watches a configured GitHub org, drafts X/Twitter posts about post-worthy activity using Claude (with optional OpenAI-compatible llama.cpp primary + Claude fallback), gates everything behind Telegram approval, and learns from approve/reject/edit decisions plus post performance via prompt context. Single user, single X account, single GitHub org. Single Docker container deployed via Coolify.
 
 Authoritative documents:
 - [`SPEC.MD`](./SPEC.MD) — full design (architecture, data model, components, configuration)
-- [`SETUP.md`](./SETUP.md) — first-time external setup (GitHub App, Telegram, X API, Anthropic, optional Ollama)
+- [`SETUP.md`](./SETUP.md) — first-time external setup (GitHub App, Telegram, X API, Anthropic, optional llama.cpp)
 - [`README.md`](./README.md) — quick start
 
 ## Architecture
@@ -33,11 +33,11 @@ Authoritative documents:
 │  │ fetch (cron) │   │   provider   │   │              │     │
 │  └──────────────┘   └──────────────┘   └──────────────┘     │
 │                            │                                │
-│                  ┌─────────┴─────────┐                      │
-│                  ▼                   ▼                      │
-│            ┌─────────┐         ┌──────────┐                 │
-│            │ Ollama  │ fail──▶ │  Claude  │                 │
-│            └─────────┘         └──────────┘                 │
+│                  ┌─────────┴──────────┐                     │
+│                  ▼                    ▼                     │
+│           ┌────────────┐         ┌──────────┐               │
+│           │ llama.cpp  │ fail──▶ │  Claude  │               │
+│           └────────────┘         └──────────┘               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -58,7 +58,7 @@ Five logical components, all in one Python process orchestrated by APScheduler:
 | Coolify project ID prefix | `j13i32n8rrvzsxpydl404f6v` |
 | Bind mount | host `/opt/wire-data` → container `/data` |
 | Healthcheck | `GET /health` on port 8080 |
-| Env vars (in Coolify) | `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TWITTER_CLIENT_ID`, `TWITTER_CLIENT_SECRET` |
+| Env vars (in Coolify) | Secrets: `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TWITTER_CLIENT_ID`, `TWITTER_CLIENT_SECRET`. LLM selection: `WIRE_LLM_PROVIDER`, `WIRE_CLAUDE_DRAFTING_MODEL`, `WIRE_CLAUDE_TRIAGE_MODEL`, `WIRE_CLAUDE_VOICE_PROFILE_MODEL`, `WIRE_CLAUDE_DIGEST_MODEL`. llama.cpp (when `WIRE_LLM_PROVIDER=llamacpp`): `WIRE_LLAMACPP_BASE_URL`, `WIRE_LLAMACPP_MODEL`, optional `WIRE_LLAMACPP_TIMEOUT_SECONDS`, `WIRE_LLAMACPP_TEMPERATURE`, `LLM_API_KEY`. See `.env.example`. |
 
 ### Find the running container
 
@@ -78,7 +78,9 @@ The Coolify-generated container suffix changes on every redeploy; the prefix is 
 
 ### Update config without code change
 
-Edit files in `/opt/wire-data/` directly on the server (config is bind-mounted), then **Restart** the container in Coolify (not Deploy — Restart preserves the existing build).
+For YAML (repos.yaml, session/quiet_hours/etc): edit files in `/opt/wire-data/` directly on the server (config is bind-mounted), then **Restart** the container in Coolify (not Deploy — Restart preserves the existing build).
+
+For LLM model / provider / endpoint changes: edit the `WIRE_*` env vars in the Coolify UI, then **Restart**. No SSH or YAML edit required.
 
 ## Key file locations
 
@@ -135,75 +137,29 @@ From `wire.llm.budget`. Without this, the call cost is invisible to budget track
 
 GitHub's `/events` endpoint returns a stripped form of `pull_request` (only `id`, `number`, `url`, `base`, `head`) and `PushEvent` (no commits at all). `_enrich_events` in `ingestion/poller.py` runs between `list_events` and `normalize_raw_event` to backfill via `/compare/{base}...{head}` and `/pulls/{n}`. Tested by `test_enrichment.py`. **If you skip enrichment, every PR triages with empty title and every Push triages with no commit messages.**
 
-### Secrets only via env var or `/data/secrets/`
+### Secrets and LLM selection live in env vars
 
-Never in code, never in git. `.gitignore` covers `.env`, `data/config.yaml`, `data/repos.yaml`, `data/secrets/`. The five secret env vars are listed in `.env.example`. GitHub App private key + X OAuth token live as files under `/data/secrets/`.
+Never in code, never in git. `.gitignore` covers `.env`, `data/config.yaml`, `data/repos.yaml`, `data/secrets/`. Env-var contract is documented in `.env.example`. GitHub App private key + X OAuth token live as files under `/data/secrets/`.
 
-### Claude model strings come from `config.yaml` verbatim
+LLM model / endpoint selection is also env-only: `WIRE_LLM_PROVIDER`, `WIRE_CLAUDE_*_MODEL`, and `WIRE_LLAMACPP_*`. `config.yaml`'s `llm:` block keeps only operational knobs (`prompt_caching`, `monthly_budget_usd`, `budget_alert_threshold`) — so flipping provider or swapping models is a Coolify env edit + restart, not a YAML edit on the server.
 
-Never substitute `claude-sonnet-4-6` etc. Model routing in `LLMConfig.claude` (drafting / triage / voice_profile / digest). Per-task routing applies when `provider: claude` AND in the fallback path when `provider: ollama`.
+### Claude model strings come from env vars verbatim
 
-## Ollama tuning (when `provider: ollama`)
+Never substitute `claude-sonnet-4-6` etc. Model routing is built from `WIRE_CLAUDE_DRAFTING_MODEL` / `WIRE_CLAUDE_TRIAGE_MODEL` / `WIRE_CLAUDE_VOICE_PROFILE_MODEL` / `WIRE_CLAUDE_DIGEST_MODEL`. Per-task routing applies when `WIRE_LLM_PROVIDER=claude` AND in the fallback path when `WIRE_LLM_PROVIDER=llamacpp`.
 
-Wire's structured-JSON outputs (`DraftResponse`, `TriageResponse`, etc.) are
-sensitive to model behavior. Helmsman discovered empirically (PRs #3 + #4)
-that mid-size open models default to refusal a lot. The **production-tuned
-defaults** that drop qwen3.5:9b refusal rate from ~40% to ~0%:
+### llama.cpp observability
 
-```yaml
-llm:
-  provider: ollama
-  ollama:
-    base_url: http://192.168.1.50:11434
-    model: qwen3.5:9b
-    timeout_seconds: 90
-    temperature: 0.5      # baked-in default; lower = more reliable schemas
-    think: true           # baked-in default; required for qwen reliability
-```
+`/status` in Telegram has a 🧠 brain block: primary backend, fallback, which one was used last, and the 24h fallback rate (counts from `llm_calls.fallback`). When `WIRE_LLM_PROVIDER=claude`, the block collapses to "claude only".
 
-These are pydantic-defaulted in `OllamaConfig`, so a deploy that doesn't
-explicitly set them gets the proven values. Override via config.yaml if
-you've tuned for a different model.
-
-### Reliability ladder
+The `wire.llamacpp.unreachable_warning` log line at startup means the configured llama.cpp host didn't respond to `GET /models` within 5s. Container starts anyway; `FallbackProvider` routes everything to Claude at runtime until the local backend recovers.
 
 When debugging "why is Wire falling back to Claude every call?":
 
-1. **Schema format mode** — Wire passes the full pydantic JSON schema as
-   `format` to `/api/chat`, not just `"json"`. This forces the model into
-   the exact structure rather than generating arbitrary JSON. Most
-   reliable; on by default whenever `response_format` is provided.
-2. **`think=True`** — extended thinking. Without it, qwen-class models
-   text-reply refusals at high rates. Top-level field on the request body.
-3. **`temperature=0.5`** — empirically the sweet spot. <0.3 hurts voice
-   variation; >0.7 hurts schema adherence on dense schemas.
-4. **`extra_options` escape hatch** — pass `top_p`, `seed`, `top_k`,
-   `repeat_penalty`, etc. via config.yaml without touching code.
+1. **Schema format mode** — `LlamaCppProvider` sends OpenAI's `response_format: {"type": "json_schema", strict: true}`. If the server rejects schema-mode it retries once with the looser `{"type": "json_object"}`. Stale servers that reject both cascade to Claude.
+2. **Temperature** — defaults to 0.5 (`WIRE_LLAMACPP_TEMPERATURE`). <0.3 hurts voice variation; >0.7 hurts schema adherence.
+3. **Auth** — 401/403 raises `LLMAuthError` and is *not* caught by `FallbackProvider`. Check `LLM_API_KEY`.
 
-### Observability
-
-`/status` in Telegram has a 🧠 brain block: primary backend, fallback,
-which one was used last, and the 24h fallback rate (counts from
-`llm_calls.fallback`). When `provider: claude`, the block collapses to
-"claude only".
-
-The `wire.ollama.unreachable_warning` log line at startup means the
-configured Ollama host didn't respond to `GET /api/tags` within 5s.
-Container starts anyway; `FallbackProvider` routes everything to Claude
-at runtime until Ollama recovers.
-
-### When tuning fails — fall back to Claude
-
-If switching to Ollama causes drafts to dry up or the fallback rate
-shoots to 100%:
-
-1. Lower temperature in `config.yaml` to `0.3`.
-2. Verify `think: true` is set (default, but check after `pre-commit`
-   trims have happened).
-3. If still failing, your model may not support the `think` parameter.
-   Try a known-good model: `qwen3.5:9b` is what Helmsman tested.
-4. Last resort: switch back to `provider: claude` while you debug. Cost
-   goes up but drafts arrive.
+If the local backend is unhealthy and you need drafts now, set `WIRE_LLM_PROVIDER=claude` in Coolify and restart. Cost goes up but drafts arrive.
 
 ## Common pitfalls (the day-one bugs, preserved here so they don't repeat)
 
@@ -246,7 +202,7 @@ ssh johan@gary "docker exec \$(docker ps --filter name=j13i32n8rrvzsxpydl404f6v 
 | `tests/test_smoke.py` | version + `/health` endpoint shape |
 | `tests/test_config.py` | pydantic validation of `config.yaml` + `repos.yaml` |
 | `tests/test_db.py` | SQLAlchemy models + Alembic upgrade |
-| `tests/test_provider_fallback.py` | Claude / Ollama / Fallback + `parse_json_lenient` |
+| `tests/test_llamacpp_provider.py` | Claude / llama.cpp / Fallback + `parse_json_lenient` |
 | `tests/test_filters.py` | pre-LLM event filters (bot, branch, conventional commits, allowlist) |
 | `tests/test_github_client.py` | pagination, 422 grace, 5xx retry, `compare_commits` |
 | `tests/test_enrichment.py` | `_enrich_events` PR + push detail backfill |

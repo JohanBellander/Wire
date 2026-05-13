@@ -18,9 +18,9 @@ from wire.config import (
     DigestConfig,
     GithubConfig,
     LearningConfig,
+    LlamaCppConfig,
     LLMConfig,
     MetricsConfig,
-    OllamaConfig,
     PersonaConfig,
     QuietHoursConfig,
     ReposLocation,
@@ -58,8 +58,12 @@ def _config() -> WireConfig:
         ),
         repos=ReposLocation(config_path="/data/repos.yaml"),
         llm=LLMConfig(
-            provider="ollama",
-            ollama=OllamaConfig(base_url="http://x", model="m", timeout_seconds=10),
+            provider="llamacpp",
+            llamacpp=LlamaCppConfig(
+                base_url="https://llm.test/v1",
+                model="m",
+                timeout_seconds=10,
+            ),
             claude=ClaudeModelsConfig(
                 drafting="claude-sonnet-4-6",
                 triage="claude-haiku-4-5",
@@ -97,7 +101,7 @@ class _StubProvider:
         self.calls.append({"task": task, "system": system, "messages": messages})
         return LLMResponse(
             content=json.dumps(self.payload),
-            provider="ollama",
+            provider="llamacpp",
             model="m",
             input_tokens=30,
             output_tokens=15,
@@ -497,7 +501,7 @@ async def test_chat_invalid_json_replies_with_fallback(db):
         async def complete(self, task, system, messages, response_format=None, max_tokens=500):
             return LLMResponse(
                 content="not json at all",
-                provider="ollama",
+                provider="llamacpp",
                 model="m",
                 input_tokens=10,
                 output_tokens=4,

@@ -15,7 +15,6 @@ from wire.config import (
     LLMConfig,
     LoggingConfig,
     MetricsConfig,
-    OllamaConfig,
     QuietHoursConfig,
     ReposLocation,
     SessionConfig,
@@ -48,7 +47,6 @@ def _config() -> WireConfig:
         repos=ReposLocation(config_path="/d/r.yaml"),
         llm=LLMConfig(
             provider="claude",
-            ollama=OllamaConfig(base_url="http://x", model="m", timeout_seconds=10),
             claude=ClaudeModelsConfig(
                 drafting="claude-sonnet-4-6",
                 triage="claude-haiku-4-5",
@@ -180,7 +178,7 @@ def test_digest_fallback_rate(db):
             sa.add(
                 LLMCall(
                     task="drafting",
-                    provider="claude" if not fb else "ollama",
+                    provider="llamacpp" if not fb else "claude",
                     model="claude-sonnet-4-6" if not fb else None,
                     fallback=fb,
                     input_tokens=100,

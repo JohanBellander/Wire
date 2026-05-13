@@ -287,23 +287,10 @@ async def run() -> None:
     repos = load_repos(config.repos.config_path)
     provider = build_provider(config.llm)
 
-    # If a local provider is the primary, soft-probe its reachability now so
-    # the logs surface obvious misconfiguration. Don't FATAL — FallbackProvider
+    # If llama.cpp is the primary, soft-probe its reachability now so the
+    # logs surface obvious misconfiguration. Don't FATAL — FallbackProvider
     # handles real runtime failures.
-    if config.llm.provider == "ollama":
-        from wire.llm.provider import probe_ollama
-
-        reachable, detail = await probe_ollama(config.llm)
-        if reachable:
-            log.info("wire.ollama.reachable", base_url=config.llm.ollama.base_url, detail=detail)
-        else:
-            log.warning(
-                "wire.ollama.unreachable_warning",
-                base_url=config.llm.ollama.base_url,
-                detail=detail,
-                hint="FallbackProvider will route to Claude until Ollama recovers.",
-            )
-    elif config.llm.provider == "llamacpp":
+    if config.llm.provider == "llamacpp":
         from wire.llm.provider import probe_llamacpp
 
         assert config.llm.llamacpp is not None  # validated by LLMConfig

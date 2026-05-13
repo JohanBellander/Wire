@@ -1,9 +1,9 @@
 """LlamaCppProvider tests.
 
 OpenAI-compatible HTTP backend (llama.cpp / vLLM / OpenRouter / ...) with
-Bearer auth and JSON-schema enforced structured output. Covers the same
-fallback contract as Ollama: transient + schema errors fall through to
-Claude, auth errors re-raise so a misconfigured key isn't silently masked.
+Bearer auth and JSON-schema enforced structured output. Covers the fallback
+contract: transient + schema errors fall through to Claude, auth errors
+re-raise so a misconfigured key isn't silently masked.
 
 All tests use respx — no real network calls.
 """
@@ -20,7 +20,6 @@ from wire.config import (
     ClaudeModelsConfig,
     LlamaCppConfig,
     LLMConfig,
-    OllamaConfig,
 )
 from wire.llm.provider import (
     ClaudeProvider,
@@ -36,23 +35,16 @@ from wire.llm.provider import (
 def _llm_cfg(
     *,
     api_key_env: str = "LLM_API_KEY",
-    extra_options: dict | None = None,
     temperature: float = 0.5,
 ) -> LLMConfig:
     return LLMConfig(
         provider="llamacpp",
-        ollama=OllamaConfig(
-            base_url="http://ollama.test:11434",
-            model="qwen3.5:9b",
-            timeout_seconds=10,
-        ),
         llamacpp=LlamaCppConfig(
             base_url="https://llm.test/v1",
             model="qwen3-coder-next",
             timeout_seconds=10,
             api_key_env=api_key_env,
             temperature=temperature,
-            extra_options=extra_options or {},
         ),
         claude=ClaudeModelsConfig(
             drafting="claude-sonnet-4-6",
@@ -266,38 +258,6 @@ async def test_llamacpp_no_response_format_when_no_schema(respx_mock, monkeypatc
     assert "response_format" not in captured[0]
 
 
-# ---------- extra_options ---------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_llamacpp_extra_options_merged(respx_mock, monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "k")
-    cfg = _llm_cfg(extra_options={"top_p": 0.9, "seed": 7, "temperature": 0.3})
-    captured: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured.append(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json=_oai_response(json.dumps({"text": "ok response", "confidence": 0.8})),
-        )
-
-    respx_mock.post("https://llm.test/v1/chat/completions").mock(side_effect=handler)
-    provider = LlamaCppProvider(cfg)
-    try:
-        await provider.complete(
-            "drafting", "sys", [{"role": "user", "content": "x"}], response_format=_Schema
-        )
-    finally:
-        await provider.aclose()
-
-    body = captured[0]
-    # extra_options override built-in keys
-    assert body["temperature"] == 0.3
-    assert body["top_p"] == 0.9
-    assert body["seed"] == 7
-
-
 # ---------- error taxonomy + fallback ---------------------------------------
 
 
@@ -443,11 +403,6 @@ def test_llamacpp_config_required_when_provider_selected():
     with pytest.raises(PydValidationError, match="llamacpp"):
         LLMConfig(
             provider="llamacpp",
-            ollama=OllamaConfig(
-                base_url="http://ollama.test:11434",
-                model="qwen",
-                timeout_seconds=10,
-            ),
             claude=ClaudeModelsConfig(
                 drafting="claude-sonnet-4-6",
                 triage="claude-haiku-4-5",

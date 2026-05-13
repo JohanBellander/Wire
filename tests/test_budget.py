@@ -15,7 +15,6 @@ from wire.config import (
     LLMConfig,
     LoggingConfig,
     MetricsConfig,
-    OllamaConfig,
     QuietHoursConfig,
     ReposLocation,
     SessionConfig,
@@ -49,7 +48,6 @@ def _config(cap=10.0, threshold=0.8) -> WireConfig:
         repos=ReposLocation(config_path="/d/r.yaml"),
         llm=LLMConfig(
             provider="claude",
-            ollama=OllamaConfig(base_url="http://x", model="m", timeout_seconds=10),
             claude=ClaudeModelsConfig(
                 drafting="claude-sonnet-4-6",
                 triage="claude-haiku-4-5",
@@ -229,13 +227,13 @@ def test_fallback_stats_counts_correctly(db):
     """Mix of recent + old + fallback + non-fallback calls."""
     now = utc_now()
     # Recent (within 24h)
-    _add_llm_call(db, fallback=False, when=now - timedelta(hours=1), provider="ollama")
-    _add_llm_call(db, fallback=False, when=now - timedelta(hours=5), provider="ollama")
+    _add_llm_call(db, fallback=False, when=now - timedelta(hours=1), provider="llamacpp")
+    _add_llm_call(db, fallback=False, when=now - timedelta(hours=5), provider="llamacpp")
     _add_llm_call(db, fallback=True, when=now - timedelta(hours=2), provider="claude")
     _add_llm_call(db, fallback=True, when=now - timedelta(hours=10), provider="claude")
     # Outside the window
     _add_llm_call(db, fallback=True, when=now - timedelta(hours=48), provider="claude")
-    _add_llm_call(db, fallback=False, when=now - timedelta(days=3), provider="ollama")
+    _add_llm_call(db, fallback=False, when=now - timedelta(days=3), provider="llamacpp")
 
     with db.session_scope() as sa:
         s = compute_fallback_stats(sa, hours=24)

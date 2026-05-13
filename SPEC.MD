@@ -15,7 +15,7 @@ This document is the implementation spec. Hand it to Claude Code as the source o
 - Send drafts to a Telegram bot. User approves, edits, or rejects every one. Nothing is posted without explicit approval.
 - Post approved content to X via the API.
 - Learn from approve/reject/edit decisions AND from post-performance metrics. Both signals feed into future drafting via prompt context — no fine-tuning, no reward functions.
-- Toggle between Claude API and a self-hosted Ollama instance for LLM calls. When Ollama is selected, Claude is the automatic fallback.
+- Toggle between Claude API and a self-hosted OpenAI-compatible endpoint (llama.cpp, vLLM, OpenRouter, etc.) for LLM calls. When a local endpoint is selected, Claude is the automatic fallback.
 - Run as a single Docker container on a Coolify-managed server.
 - Zero day-to-day maintenance after setup.
 
@@ -51,11 +51,11 @@ This document is the implementation spec. Hand it to Claude Code as the source o
 │  │ fetch (cron) │   │   provider   │   │              │      │
 │  └──────────────┘   └──────────────┘   └──────────────┘      │
 │                            │                                 │
-│                  ┌─────────┴─────────┐                       │
-│                  ▼                   ▼                       │
-│            ┌─────────┐         ┌──────────┐                  │
-│            │ Ollama  │ fail──▶ │  Claude  │                  │
-│            └─────────┘         └──────────┘                  │
+│                  ┌─────────┴──────────┐                      │
+│                  ▼                    ▼                      │
+│           ┌────────────┐         ┌──────────┐                │
+│           │ llama.cpp  │ fail──▶ │  Claude  │                │
+│           └────────────┘         └──────────┘                │
 └──────────────────────────────────────────────────────────────┘
        ▲                  ▲                       ▲
        │                  │                       │
@@ -74,119 +74,25 @@ Five logical components, all in one Python process orchestrated by APScheduler:
 
 ## 3. LLM provider abstraction
 
-A single toggle: `provider: ollama` or `provider: claude`.
+A single toggle (set via `WIRE_LLM_PROVIDER` env var): `claude` or `llamacpp`.
 
-**When `provider: claude`:**
+**When `WIRE_LLM_PROVIDER=claude`:**
 - All calls go to Claude.
 - Per-task model routing applies (Haiku for cheap tasks, Sonnet for drafting, etc.).
 - No fallback (Claude is the only provider).
 
-**When `provider: ollama`:**
-- All calls go to Ollama first, regardless of task type.
+**When `WIRE_LLM_PROVIDER=llamacpp`:**
+- All calls go to the local OpenAI-compatible endpoint first, regardless of task type.
 - On failure (timeout, network error, invalid output, schema mismatch) → automatically retry against Claude using per-task routing.
+- Auth failures (HTTP 401/403) surface as `LLMAuthError` and do NOT trigger fallback — they're configuration bugs.
 - Fallback events are logged and surfaced in weekly digest.
 
-```python
-# src/wire/llm/provider.py
+Concrete classes live in `src/wire/llm/provider.py`:
 
-from typing import Protocol, Literal
-from anthropic import Anthropic
-import httpx
-import json
-import logging
-
-log = logging.getLogger(__name__)
-
-TaskType = Literal["drafting", "triage", "voice_profile", "digest"]
-
-
-class LLMProvider(Protocol):
-    def complete(
-        self,
-        task: TaskType,
-        system: str,
-        messages: list[dict],
-        response_format: type | None = None,
-        max_tokens: int = 1500,
-    ) -> str: ...
-
-
-class ClaudeProvider:
-    def __init__(self, config: dict):
-        self.client = Anthropic()
-        self.models = {
-            "drafting": config["drafting"],
-            "triage": config["triage"],
-            "voice_profile": config["voice_profile"],
-            "digest": config["digest"],
-        }
-        self.prompt_caching = config.get("prompt_caching", True)
-
-    def complete(self, task, system, messages, response_format=None, max_tokens=1500):
-        model = self.models[task]
-        # Use cache_control on system prompt + static context blocks
-        # See section 8 for caching strategy
-        ...
-
-
-class OllamaProvider:
-    def __init__(self, config: dict):
-        self.base_url = config["base_url"]
-        self.model = config["model"]
-        self.timeout = config["timeout_seconds"]
-
-    def complete(self, task, system, messages, response_format=None, max_tokens=1500):
-        # POST to /api/chat with timeout
-        # Raise on non-200, timeout, empty response, or schema mismatch
-        ...
-
-
-class FallbackProvider:
-    """Wraps Ollama with Claude as automatic fallback. ALL tasks use Ollama
-    first; Claude is only invoked if Ollama fails."""
-
-    def __init__(self, primary: OllamaProvider, fallback: ClaudeProvider):
-        self.primary = primary
-        self.fallback = fallback
-
-    def complete(self, task, system, messages, response_format=None, max_tokens=1500):
-        try:
-            result = self.primary.complete(task, system, messages, response_format, max_tokens)
-            if self._is_valid(result, response_format):
-                log_provider_call(task, "ollama", success=True)
-                return result
-            log.warning(f"Ollama returned invalid output for task={task}, falling back")
-        except Exception as e:
-            log.warning(f"Ollama failed for task={task}: {e}, falling back")
-
-        log_provider_call(task, "ollama", success=False)
-        result = self.fallback.complete(task, system, messages, response_format, max_tokens)
-        log_provider_call(task, "claude", success=True)
-        return result
-
-    def _is_valid(self, output: str, response_format: type | None) -> bool:
-        if not output or len(output.strip()) < 20:
-            return False
-        if response_format:
-            try:
-                parsed = json.loads(output)
-                response_format(**parsed)  # pydantic validation
-                return True
-            except Exception:
-                return False
-        return True
-
-
-def build_provider(config: dict) -> LLMProvider:
-    claude = ClaudeProvider(config["claude"])
-    if config["provider"] == "claude":
-        return claude
-    elif config["provider"] == "ollama":
-        ollama = OllamaProvider(config["ollama"])
-        return FallbackProvider(primary=ollama, fallback=claude)
-    else:
-        raise ValueError(f"Unknown provider: {config['provider']}")
-```
+- `ClaudeProvider` — uses the Anthropic SDK with per-task model strings (`WIRE_CLAUDE_DRAFTING_MODEL` etc.). Cache breakpoints on the last system block when `prompt_caching: true`.
+- `LlamaCppProvider` — POSTs to `{WIRE_LLAMACPP_BASE_URL}/chat/completions` with Bearer auth from `LLM_API_KEY`. Sends OpenAI's `response_format: {"type": "json_schema", strict: true}` when a pydantic schema is supplied; retries once with `{"type": "json_object"}` on HTTP 400.
+- `FallbackProvider` — wraps a local primary with `ClaudeProvider` as automatic fallback. Catches `LLMTransientError | LLMSchemaError | LLMError`; re-raises `LLMAuthError`.
+- `build_provider(config)` — returns `ClaudeProvider` when `provider == "claude"`, otherwise `FallbackProvider(LlamaCppProvider, ClaudeProvider)`.
 
 Every call to `provider.complete(...)` is logged to a `llm_calls` table with: task, provider used, fallback occurred (yes/no), input/output token counts, cost estimate, latency.
 
@@ -210,17 +116,8 @@ repos:
   config_path: /data/repos.yaml
 
 llm:
-  provider: claude                # claude | ollama
-  ollama:
-    base_url: http://192.168.1.50:11434
-    model: qwen2.5:7b-instruct
-    timeout_seconds: 90
-  claude:
-    # Used directly when provider=claude, OR as fallback when provider=ollama
-    drafting: claude-sonnet-4-6
-    triage: claude-haiku-4-5
-    voice_profile: claude-haiku-4-5
-    digest: claude-haiku-4-5
+  # Provider, Claude per-task models, and llama.cpp endpoint live in env vars
+  # (WIRE_LLM_PROVIDER, WIRE_CLAUDE_*_MODEL, WIRE_LLAMACPP_*). See .env.example.
   prompt_caching: true
   monthly_budget_usd: 10
   budget_alert_threshold: 0.8     # alert at 80%
@@ -385,7 +282,7 @@ CREATE INDEX idx_metrics_post ON metrics(post_id);
 CREATE TABLE llm_calls (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   task            TEXT NOT NULL,
-  provider        TEXT NOT NULL,                  -- ollama | claude
+  provider        TEXT NOT NULL,                  -- llamacpp | claude
   model           TEXT,
   fallback        BOOLEAN NOT NULL DEFAULT 0,
   input_tokens    INTEGER,
@@ -529,7 +426,7 @@ Below median:
 
 LLM usage:
 • Spend this month: $3.40 / $10.00 (34%)
-• Provider: Ollama primary, Claude fallback rate: 12%
+• Provider: llama.cpp primary, Claude fallback rate: 12%
 ```
 
 Informational only — no action required.
@@ -623,10 +520,9 @@ Documented in `SETUP.md` shipped with the repo. The bot fails fast at startup wi
 ### Anthropic
 1. Get API key → set `ANTHROPIC_API_KEY` env var.
 
-### Ollama (optional)
-1. Run Ollama on a network-accessible host (`OLLAMA_HOST=0.0.0.0`).
-2. Pull a model: `ollama pull qwen2.5:7b-instruct` (or your preferred).
-3. Set `llm.ollama.base_url` in config.
+### llama.cpp / OpenAI-compatible endpoint (optional)
+1. Run an OpenAI-compatible server (llama.cpp server, vLLM, Ollama's OpenAI-compat endpoint, OpenRouter, ...).
+2. Set `WIRE_LLM_PROVIDER=llamacpp`, `WIRE_LLAMACPP_BASE_URL`, `WIRE_LLAMACPP_MODEL`, and `LLM_API_KEY` (if auth required) as env vars.
 
 ---
 
@@ -649,7 +545,7 @@ wire/
 │       │   ├── migrations/     # Alembic
 │       │   └── session.py
 │       ├── llm/
-│       │   ├── provider.py     # LLMProvider, ClaudeProvider, OllamaProvider, FallbackProvider
+│       │   ├── provider.py     # LLMProvider, ClaudeProvider, LlamaCppProvider, FallbackProvider
 │       │   ├── caching.py      # prompt cache helpers
 │       │   ├── budget.py       # monthly budget tracking + alerts
 │       │   └── prompts/
@@ -700,7 +596,7 @@ wire/
 **Key dependencies:**
 - `python-telegram-bot` ≥ 21
 - `anthropic` (official SDK)
-- `httpx` (Ollama + X API)
+- `httpx` (llama.cpp + X API)
 - `PyGithub` or `gidgethub` (GitHub App auth)
 - `apscheduler` (cron-like scheduling)
 - `sqlalchemy` + `alembic`
@@ -740,19 +636,19 @@ CMD ["uv", "run", "python", "-m", "wire.main"]
 
 ## 12. Cost controls (built in)
 
-1. **Per-task model routing** — Haiku for triage/voice/digest, Sonnet for drafting, Opus never default. Applies when `provider: claude` AND in the fallback path when `provider: ollama`.
+1. **Per-task model routing** — Haiku for triage/voice/digest, Sonnet for drafting, Opus never default. Applies when `WIRE_LLM_PROVIDER=claude` AND in the fallback path when `WIRE_LLM_PROVIDER=llamacpp`.
 2. **Prompt caching** — system prompt + voice profile + posts + decisions cached at request level. Expected ~70% input cache hit rate after warm-up.
 3. **Pre-LLM event filtering** — bots, version bumps, conventional-commit chore/ci/docs filtered before any LLM call.
 4. **Triage threshold** — sessions with all events scoring < 0.3 skip drafting entirely (no expensive LLM call).
 5. **Output token cap** — `max_tokens=1500` for drafting, lower for other tasks.
 6. **Monthly budget cap** — tracked in `llm_calls.cost_usd`. At 80%: Telegram warning. At 100%: drafting paused (triage continues at minimal cost so the queue doesn't lose data); user can `/extend` to authorize overrun for the rest of the month.
-7. **Ollama as cost shifter** — when `provider: ollama`, the bulk of token volume runs locally for free; Claude only used on Ollama failures.
+7. **llama.cpp as cost shifter** — when `WIRE_LLM_PROVIDER=llamacpp`, the bulk of token volume runs locally for free; Claude only used on local-backend failures.
 
 **Estimated monthly cost** (on Claude with caching, ~4 sessions/day):
 - Sonnet drafting: ~$5/month
 - Haiku triage/voice/digest: ~$1/month
 - **Total: ~$6/month** with Claude as primary
-- Lower if Ollama handles most volume successfully
+- Lower if the local backend handles most volume successfully
 
 ---
 
@@ -773,7 +669,7 @@ The user's approval gate is the safety mechanism. The bot cannot post anything w
 
 - **Unit tests** for: filters, session clustering, prompt building, provider fallback logic, budget tracking, edit-diff generation.
 - **Integration tests** with a fake GitHub event stream + mocked LLM provider, end-to-end through to "Telegram message would be sent."
-- **Provider fallback test**: stub Ollama to return invalid JSON / time out / 500 → verify Claude is called with same args.
+- **Provider fallback test**: stub the local llama.cpp endpoint to return invalid JSON / time out / 500 → verify Claude is called with same args.
 - **Manual smoke test on first deploy**: run `python -m wire.scripts.dry_run` which ingests last 24h of events into a temp DB, drafts, and prints what *would* be sent — no Telegram, no posting.
 
 ---
@@ -784,7 +680,7 @@ These are intentionally deferred to v2:
 
 - Telegram commands for editing the repo allowlist (`/include`, `/exclude`).
 - Image/media in posts (commit graphs, terminal output screenshots).
-- Per-task LLM provider routing when `provider: ollama` (e.g. "use Ollama for triage but always Claude for drafting"). v1 is all-or-nothing on the provider toggle.
+- Per-task LLM provider routing when `WIRE_LLM_PROVIDER=llamacpp` (e.g. "use the local backend for triage but always Claude for drafting"). v1 is all-or-nothing on the provider toggle.
 - Threading multiple sessions into a longer-form post.
 - A web dashboard.
 

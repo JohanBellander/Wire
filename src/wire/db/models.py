@@ -146,7 +146,7 @@ class LLMCall(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task: Mapped[str] = mapped_column(String, nullable=False)
-    provider: Mapped[str] = mapped_column(String, nullable=False)  # ollama | claude
+    provider: Mapped[str] = mapped_column(String, nullable=False)  # llamacpp | claude
     model: Mapped[str | None] = mapped_column(String)
     fallback: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     input_tokens: Mapped[int | None] = mapped_column(Integer)

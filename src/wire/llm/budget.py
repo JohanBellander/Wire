@@ -1,7 +1,7 @@
 """Cost estimation + monthly budget tracking.
 
 Cost estimates are rate-table based; rates are best-effort April 2026 numbers
-and may drift. Update PRICES if Anthropic changes them. Ollama is $0.
+and may drift. Update PRICES if Anthropic changes them. Local backends are $0.
 
 Budget logic (SPEC §12):
   * 80%  → Telegram warn
@@ -67,7 +67,7 @@ def estimate_cost_usd(
     cache_write_tokens: int = 0,
 ) -> float:
     """Return USD cost for one Claude call. Returns 0.0 for unknown models
-    (e.g. Ollama) so callers don't need a special case."""
+    (e.g. local llama.cpp) so callers don't need a special case."""
     rates = _resolve_rates(model)
     if rates is None:
         return 0.0

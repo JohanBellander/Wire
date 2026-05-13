@@ -37,7 +37,7 @@ class _StubProvider:
         self.calls.append({"task": task, "system": system, "messages": messages})
         return LLMResponse(
             content=json.dumps(self.payload),
-            provider="ollama",
+            provider="llamacpp",
             model="m",
             input_tokens=20,
             output_tokens=12,

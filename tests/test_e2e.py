@@ -23,7 +23,6 @@ from wire.config import (
     LLMConfig,
     LoggingConfig,
     MetricsConfig,
-    OllamaConfig,
     QuietHoursConfig,
     RepoEntry,
     ReposFile,
@@ -67,7 +66,6 @@ def _config() -> WireConfig:
         repos=ReposLocation(config_path="/d/r.yaml"),
         llm=LLMConfig(
             provider="claude",
-            ollama=OllamaConfig(base_url="http://x", model="m", timeout_seconds=10),
             claude=ClaudeModelsConfig(
                 drafting="claude-sonnet-4-6",
                 triage="claude-haiku-4-5",
