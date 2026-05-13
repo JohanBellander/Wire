@@ -75,8 +75,8 @@ async def test_triage_event_passes_repo_notes_through(db):
             captured.append(messages[0]["content"])
             return LLMResponse(
                 content='{"score": 0.7, "reason": "post-worthy"}',
-                provider="ollama",
-                model="qwen3.5:9b",
+                provider="llamacpp",
+                model="qwen3-coder-next",
                 input_tokens=10,
                 output_tokens=5,
                 cache_read_tokens=0,

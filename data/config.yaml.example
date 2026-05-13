@@ -12,39 +12,10 @@ repos:
   config_path: /data/repos.yaml
 
 llm:
-  provider: claude                # claude | ollama | llamacpp
-  ollama:
-    base_url: http://192.168.1.50:11434
-    model: qwen3.5:9b
-    timeout_seconds: 90
-    # Helmsman empirically found qwen3.5:9b refuses structured output ~40%
-    # of the time at defaults. think=True + temperature=0.5 fixes it.
-    # Lower temperature for more reliable schema adherence; raise for variation.
-    temperature: 0.5
-    think: true
-    # extra_options lets you pass any other Ollama option (top_p, seed, ...)
-    # without code changes:
-    # extra_options:
-    #   top_p: 0.95
-    #   seed: 42
-  # llamacpp is for any OpenAI-compatible HTTP backend: llama.cpp's built-in
-  # server, vLLM, OpenRouter, etc. base_url MUST include the /v1 segment.
-  # Bearer auth is read from the env var named in api_key_env (set in Coolify
-  # or .env, NOT in this file). Leave the env var empty for unauth'd local servers.
-  # llamacpp:
-  #   base_url: https://llm.example.com/v1
-  #   model: qwen3-coder-next
-  #   timeout_seconds: 90
-  #   api_key_env: LLM_API_KEY
-  #   temperature: 0.5
-  #   extra_options:
-  #     top_p: 0.95
-  claude:
-    # Used directly when provider=claude, OR as fallback when provider=ollama
-    drafting: claude-sonnet-4-6
-    triage: claude-haiku-4-5
-    voice_profile: claude-haiku-4-5
-    digest: claude-haiku-4-5
+  # Provider selection, Claude per-task models, and the llama.cpp endpoint
+  # live in env vars (see .env.example): WIRE_LLM_PROVIDER, WIRE_CLAUDE_*_MODEL,
+  # WIRE_LLAMACPP_BASE_URL, etc. Set them in Coolify so they can be flipped
+  # without editing this file. Only the operational knobs below stay in YAML.
   prompt_caching: true
   monthly_budget_usd: 10
   budget_alert_threshold: 0.8     # alert at 80%

@@ -105,7 +105,7 @@ def gather_numbers(cfg: WireConfig, *, now: datetime | None = None) -> DigestNum
         ).scalar_one()
         fb_rate = (fb / total) if total else 0.0
 
-    primary = "Claude" if cfg.llm.provider == "claude" else "Ollama"
+    primary = "Claude" if cfg.llm.provider == "claude" else "llama.cpp"
     return DigestNumbers(
         drafted=drafted,
         posted=posted,

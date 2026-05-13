@@ -57,7 +57,7 @@ tests/            # pytest
 
 ## Setup
 
-`SETUP.md` (one-time external setup for GitHub App, Telegram bot, X API, Anthropic, optional Ollama) lands in step 13. For now, refer to SPEC.MD §9.
+`SETUP.md` (one-time external setup for GitHub App, Telegram bot, X API, Anthropic, optional llama.cpp) lands in step 13. For now, refer to SPEC.MD §9.
 
 ## License
 

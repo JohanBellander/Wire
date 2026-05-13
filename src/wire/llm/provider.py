@@ -1,9 +1,8 @@
 """LLM provider abstraction. See SPEC.MD §3.
 
-Four concrete providers:
+Three concrete providers:
 
   ClaudeProvider    — anthropic SDK with per-task model routing.
-  OllamaProvider    — POST /api/chat to a self-hosted host, format: json.
   LlamaCppProvider  — OpenAI-compatible /v1/chat/completions (llama.cpp, vLLM,
                        OpenRouter, etc.) with Bearer auth + JSON-schema enforced
                        structured output.
@@ -253,141 +252,7 @@ class ClaudeProvider:
         raise LLMError("retry loop exited unexpectedly")
 
 
-# --- OllamaProvider -----------------------------------------------------------
-
-
-class OllamaProvider:
-    def __init__(
-        self,
-        config: LLMConfig,
-        client: httpx.AsyncClient | None = None,
-    ) -> None:
-        self._cfg = config.ollama
-        self._client = client
-        self._owns_client = client is None
-
-    @property
-    def name(self) -> str:
-        return "ollama"
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self._cfg.timeout_seconds)
-        return self._client
-
-    async def aclose(self) -> None:
-        if self._client is not None and self._owns_client:
-            await self._client.aclose()
-            self._client = None
-
-    async def complete(
-        self,
-        task: TaskType,
-        system: str | list[dict],
-        messages: list[dict],
-        response_format: type[BaseModel] | None = None,
-        max_tokens: int = 1500,
-    ) -> LLMResponse:
-        # Flatten Anthropic-shaped content blocks if we get them.
-        sys_text = _system_to_text(system)
-        ollama_messages: list[dict[str, Any]] = []
-        if sys_text:
-            ollama_messages.append({"role": "system", "content": sys_text})
-        for m in messages:
-            ollama_messages.append({"role": m["role"], "content": _content_to_text(m["content"])})
-
-        # Build the options dict: Wire's per-call max_tokens, plus the
-        # config's temperature, plus any extra_options the user has set
-        # (top_p, seed, etc.). User extras override defaults.
-        options: dict[str, Any] = {
-            "num_predict": max_tokens,
-            "temperature": self._cfg.temperature,
-        }
-        options.update(self._cfg.extra_options)
-
-        body: dict[str, Any] = {
-            "model": self._cfg.model,
-            "messages": ollama_messages,
-            "stream": False,
-            "think": self._cfg.think,
-            "options": options,
-        }
-        if response_format is not None:
-            # Pass the full JSON Schema (newer Ollama feature). Forces the
-            # model into the exact pydantic shape — significantly more
-            # reliable than `format="json"` for mid-size models.
-            try:
-                body["format"] = response_format.model_json_schema()
-            except Exception:  # noqa: BLE001 — defensive fallback
-                body["format"] = "json"
-
-        client = self._get_client()
-        t0 = time.perf_counter()
-        try:
-            resp = await client.post(
-                f"{self._cfg.base_url}/api/chat",
-                json=body,
-                timeout=self._cfg.timeout_seconds,
-            )
-        except httpx.TimeoutException as e:
-            raise LLMTransientError(f"Ollama timeout: {e}") from e
-        except httpx.TransportError as e:
-            raise LLMTransientError(f"Ollama transport error: {e}") from e
-        latency = int((time.perf_counter() - t0) * 1000)
-
-        if resp.status_code == 401 or resp.status_code == 403:
-            raise LLMAuthError(f"Ollama auth failed: {resp.status_code}")
-        if resp.status_code >= 400:
-            raise LLMTransientError(f"Ollama HTTP {resp.status_code}: {resp.text[:200]}")
-
-        try:
-            data = resp.json()
-        except json.JSONDecodeError as e:
-            raise LLMTransientError(f"Ollama returned non-JSON: {e}") from e
-
-        msg = data.get("message", {}) or {}
-        content = msg.get("content", "") or ""
-        in_t = int(data.get("prompt_eval_count", 0))
-        out_t = int(data.get("eval_count", 0))
-
-        # Diagnostic log when the response is empty or suspiciously short:
-        # we want visibility into WHY Ollama produced nothing usable, since
-        # that triggers a fallback to Claude. Common culprits:
-        #   - thinking-mode models put the answer in `message.thinking`
-        #     while content is empty
-        #   - the format=<schema> + think=True combination confused the model
-        #   - context length exceeded (look at prompt_eval_count vs context)
-        #   - done_reason="length" → output truncated mid-token
-        if not content or len(content.strip()) < 20:
-            log.warning(
-                "wire.ollama.short_response",
-                task=task,
-                model=self._cfg.model,
-                content_len=len(content),
-                content_preview=content[:80] or "(empty)",
-                thinking_len=len(msg.get("thinking") or ""),
-                thinking_preview=(msg.get("thinking") or "")[:120],
-                message_keys=sorted(msg.keys()) if isinstance(msg, dict) else [],
-                prompt_eval_count=in_t,
-                eval_count=out_t,
-                done_reason=data.get("done_reason"),
-                think_setting=self._cfg.think,
-                has_format_schema=response_format is not None,
-            )
-
-        _validate_output(content, response_format)
-        return LLMResponse(
-            content=content,
-            provider="ollama",
-            model=self._cfg.model,
-            input_tokens=in_t,
-            output_tokens=out_t,
-            cache_read_tokens=0,
-            cache_write_tokens=0,
-            latency_ms=latency,
-            cost_usd=0.0,
-            task=task,
-        )
+# --- shared helpers used by LlamaCppProvider ----------------------------------
 
 
 def _system_to_text(system: str | list[dict]) -> str:
@@ -504,7 +369,6 @@ class LlamaCppProvider:
             "temperature": self._cfg.temperature,
             "stream": False,
         }
-        body.update(self._cfg.extra_options)
 
         rf = self._build_response_format(response_format)
         if rf is not None:
@@ -598,13 +462,13 @@ class LlamaCppProvider:
 
 
 class FallbackProvider:
-    """Wraps a local primary (Ollama or llama.cpp) with Claude as automatic
-    fallback. Per SPEC §3, all tasks go to the local primary first; Claude is
-    only invoked when the primary fails."""
+    """Wraps a local primary (llama.cpp / OpenAI-compatible) with Claude as
+    automatic fallback. Per SPEC §3, all tasks go to the local primary first;
+    Claude is only invoked when the primary fails."""
 
     def __init__(
         self,
-        primary: OllamaProvider | LlamaCppProvider,
+        primary: LlamaCppProvider,
         fallback: ClaudeProvider,
     ) -> None:
         self.primary = primary
@@ -647,31 +511,6 @@ class FallbackProvider:
 # --- factory ------------------------------------------------------------------
 
 
-async def probe_ollama(config: LLMConfig, *, timeout_seconds: float = 5.0) -> tuple[bool, str]:
-    """Soft reachability probe for the configured Ollama host. Used at boot
-    to surface obvious misconfiguration in the logs without blocking startup.
-
-    Returns (reachable, detail). `detail` is the model count on success, or
-    a short error string on failure. Never raises — `FallbackProvider`
-    handles real runtime failures."""
-    base = config.ollama.base_url
-    url = f"{base}/api/tags"
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.get(url)
-        if resp.status_code != 200:
-            return False, f"HTTP {resp.status_code}"
-        data = resp.json()
-        models = data.get("models", []) if isinstance(data, dict) else []
-        return True, f"{len(models)} models available"
-    except httpx.TimeoutException:
-        return False, f"timeout after {timeout_seconds}s"
-    except httpx.TransportError as e:
-        return False, f"transport error: {e}"
-    except Exception as e:  # noqa: BLE001 — defensive
-        return False, f"{type(e).__name__}: {e}"
-
-
 async def probe_llamacpp(config: LLMConfig, *, timeout_seconds: float = 5.0) -> tuple[bool, str]:
     """Soft reachability probe for the configured llama.cpp / OpenAI-compat
     host. Hits `GET /models` (the standard OpenAI listing endpoint).
@@ -707,7 +546,6 @@ def build_provider(
     config: LLMConfig,
     *,
     claude: ClaudeProvider | None = None,
-    ollama: OllamaProvider | None = None,
     llamacpp: LlamaCppProvider | None = None,
 ) -> LLMProvider:
     """Build the right provider tree. Optional injected providers are used
@@ -715,9 +553,6 @@ def build_provider(
     claude_p = claude or ClaudeProvider(config)
     if config.provider == "claude":
         return claude_p
-    if config.provider == "ollama":
-        ollama_p = ollama or OllamaProvider(config)
-        return FallbackProvider(primary=ollama_p, fallback=claude_p)
     if config.provider == "llamacpp":
         llamacpp_p = llamacpp or LlamaCppProvider(config)
         return FallbackProvider(primary=llamacpp_p, fallback=claude_p)

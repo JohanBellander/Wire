@@ -26,16 +26,6 @@ github:
 repos:
   config_path: /data/repos.yaml
 llm:
-  provider: claude
-  ollama:
-    base_url: http://192.168.1.50:11434/
-    model: qwen3.5:9b
-    timeout_seconds: 90
-  claude:
-    drafting: claude-sonnet-4-6
-    triage: claude-haiku-4-5
-    voice_profile: claude-haiku-4-5
-    digest: claude-haiku-4-5
   prompt_caching: true
   monthly_budget_usd: 10
   budget_alert_threshold: 0.8
@@ -70,6 +60,21 @@ logging:
 """).strip()
 
 
+@pytest.fixture(autouse=True)
+def _llm_env(monkeypatch):
+    """Provide a default claude-only LLM env so load_config() succeeds.
+    Individual tests override or unset via monkeypatch to test edge cases."""
+    monkeypatch.setenv("WIRE_LLM_PROVIDER", "claude")
+    monkeypatch.setenv("WIRE_CLAUDE_DRAFTING_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("WIRE_CLAUDE_TRIAGE_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("WIRE_CLAUDE_VOICE_PROFILE_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("WIRE_CLAUDE_DIGEST_MODEL", "claude-haiku-4-5")
+    monkeypatch.delenv("WIRE_LLAMACPP_BASE_URL", raising=False)
+    monkeypatch.delenv("WIRE_LLAMACPP_MODEL", raising=False)
+    monkeypatch.delenv("WIRE_LLAMACPP_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("WIRE_LLAMACPP_TEMPERATURE", raising=False)
+
+
 VALID_REPOS = textwrap.dedent("""
 repos:
   - name: winetrackr
@@ -100,15 +105,55 @@ def test_valid_config_loads(tmp_path):
     assert any("chore" in p for p in cfg.ingestion.skip_commit_patterns)
 
 
-def test_ollama_base_url_trailing_slash_stripped(tmp_path):
+def test_llamacpp_base_url_trailing_slash_stripped(tmp_path, monkeypatch):
+    monkeypatch.setenv("WIRE_LLM_PROVIDER", "llamacpp")
+    monkeypatch.setenv("WIRE_LLAMACPP_BASE_URL", "https://llm.test/v1/")
+    monkeypatch.setenv("WIRE_LLAMACPP_MODEL", "qwen3-coder-next")
     p = _write(tmp_path, "config.yaml", VALID_CONFIG)
     cfg = load_config(p)
-    assert cfg.llm.ollama.base_url == "http://192.168.1.50:11434"
+    assert cfg.llm.llamacpp.base_url == "https://llm.test/v1"
 
 
-def test_invalid_provider_rejected(tmp_path):
-    bad = VALID_CONFIG.replace("provider: claude", "provider: groq")
-    p = _write(tmp_path, "config.yaml", bad)
+def test_invalid_provider_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("WIRE_LLM_PROVIDER", "groq")
+    p = _write(tmp_path, "config.yaml", VALID_CONFIG)
+    with pytest.raises(ConfigError):
+        load_config(p)
+
+
+def test_missing_provider_rejected(tmp_path, monkeypatch):
+    monkeypatch.delenv("WIRE_LLM_PROVIDER", raising=False)
+    p = _write(tmp_path, "config.yaml", VALID_CONFIG)
+    with pytest.raises(ConfigError):
+        load_config(p)
+
+
+def test_missing_claude_model_env_rejected(tmp_path, monkeypatch):
+    monkeypatch.delenv("WIRE_CLAUDE_DRAFTING_MODEL", raising=False)
+    p = _write(tmp_path, "config.yaml", VALID_CONFIG)
+    with pytest.raises(ConfigError):
+        load_config(p)
+
+
+def test_llamacpp_provider_loads_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("WIRE_LLM_PROVIDER", "llamacpp")
+    monkeypatch.setenv("WIRE_LLAMACPP_BASE_URL", "https://llm.test/v1")
+    monkeypatch.setenv("WIRE_LLAMACPP_MODEL", "qwen3-coder-next")
+    monkeypatch.setenv("WIRE_LLAMACPP_TIMEOUT_SECONDS", "120")
+    monkeypatch.setenv("WIRE_LLAMACPP_TEMPERATURE", "0.3")
+    p = _write(tmp_path, "config.yaml", VALID_CONFIG)
+    cfg = load_config(p)
+    assert cfg.llm.provider == "llamacpp"
+    assert cfg.llm.llamacpp.base_url == "https://llm.test/v1"
+    assert cfg.llm.llamacpp.model == "qwen3-coder-next"
+    assert cfg.llm.llamacpp.timeout_seconds == 120
+    assert cfg.llm.llamacpp.temperature == 0.3
+
+
+def test_llamacpp_missing_base_url_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("WIRE_LLM_PROVIDER", "llamacpp")
+    monkeypatch.setenv("WIRE_LLAMACPP_MODEL", "qwen3-coder-next")
+    p = _write(tmp_path, "config.yaml", VALID_CONFIG)
     with pytest.raises(ConfigError):
         load_config(p)
 

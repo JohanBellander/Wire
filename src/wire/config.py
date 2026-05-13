@@ -7,6 +7,7 @@ process at startup with a clear message. See SPEC.MD §4 and §5.
 
 from __future__ import annotations
 
+import os
 from datetime import time as dt_time
 from pathlib import Path
 from typing import Any, Literal
@@ -28,25 +29,6 @@ class ReposLocation(BaseModel):
     config_path: Path
 
 
-class OllamaConfig(BaseModel):
-    base_url: str
-    model: str
-    timeout_seconds: int = Field(ge=1, le=600)
-    # Empirical defaults from Helmsman's qwen3.5:9b experiments — the
-    # combination drops structured-output refusal rate from ~40% to ~0%.
-    # Override per-deploy in config.yaml if you've tuned for a different model.
-    temperature: float = Field(default=0.5, ge=0.0, le=2.0)
-    think: bool = True
-    # Escape hatch for top_p, top_k, seed, repeat_penalty, etc. without code
-    # changes. Values flow into the Ollama `options` dict on every call.
-    extra_options: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("base_url")
-    @classmethod
-    def _strip_trailing_slash(cls, v: str) -> str:
-        return v.rstrip("/")
-
-
 class LlamaCppConfig(BaseModel):
     """OpenAI-compatible HTTP backend (llama.cpp server, vLLM, OpenRouter, etc.).
 
@@ -62,9 +44,6 @@ class LlamaCppConfig(BaseModel):
     timeout_seconds: int = Field(ge=1, le=600)
     api_key_env: str = "LLM_API_KEY"
     temperature: float = Field(default=0.5, ge=0.0, le=2.0)
-    # Escape hatch for top_p, seed, top_k, etc. Values flow into the request
-    # body alongside model/messages/temperature without code changes.
-    extra_options: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("base_url")
     @classmethod
@@ -80,8 +59,7 @@ class ClaudeModelsConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["claude", "ollama", "llamacpp"]
-    ollama: OllamaConfig
+    provider: Literal["claude", "llamacpp"]
     llamacpp: LlamaCppConfig | None = None
     claude: ClaudeModelsConfig
     prompt_caching: bool = True
@@ -91,7 +69,10 @@ class LLMConfig(BaseModel):
     @model_validator(mode="after")
     def _llamacpp_present_when_selected(self) -> LLMConfig:
         if self.provider == "llamacpp" and self.llamacpp is None:
-            raise ValueError("llm.provider=llamacpp requires an llm.llamacpp block in config.yaml")
+            raise ValueError(
+                "WIRE_LLM_PROVIDER=llamacpp requires WIRE_LLAMACPP_BASE_URL "
+                "+ WIRE_LLAMACPP_MODEL env vars"
+            )
         return self
 
 
@@ -247,8 +228,73 @@ def _load_yaml_mapping(path: Path) -> dict:
     return raw
 
 
+def _build_llm_dict_from_env(yaml_llm: dict[str, Any]) -> dict[str, Any]:
+    """Assemble the validated `llm` block by reading provider / model / endpoint
+    fields from env vars and folding in the operational settings that remain in
+    config.yaml (`prompt_caching`, `monthly_budget_usd`, `budget_alert_threshold`).
+
+    Env vars are the source of truth for what model runs where so the live knobs
+    can be flipped in Coolify without editing /data/config.yaml. Missing required
+    vars surface as ConfigError at startup.
+    """
+    provider = os.environ.get("WIRE_LLM_PROVIDER", "").strip().lower()
+    if not provider:
+        raise ConfigError("WIRE_LLM_PROVIDER must be set (claude | llamacpp)")
+    if provider not in ("claude", "llamacpp"):
+        raise ConfigError(
+            f"WIRE_LLM_PROVIDER={provider!r} is invalid; expected 'claude' or 'llamacpp'"
+        )
+
+    def _required(name: str) -> str:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            raise ConfigError(f"{name} must be set")
+        return value
+
+    claude_models = {
+        "drafting": _required("WIRE_CLAUDE_DRAFTING_MODEL"),
+        "triage": _required("WIRE_CLAUDE_TRIAGE_MODEL"),
+        "voice_profile": _required("WIRE_CLAUDE_VOICE_PROFILE_MODEL"),
+        "digest": _required("WIRE_CLAUDE_DIGEST_MODEL"),
+    }
+
+    llamacpp_block: dict[str, Any] | None = None
+    if provider == "llamacpp":
+        try:
+            timeout = int(os.environ.get("WIRE_LLAMACPP_TIMEOUT_SECONDS", "90"))
+        except ValueError as e:
+            raise ConfigError(f"WIRE_LLAMACPP_TIMEOUT_SECONDS must be an integer: {e}") from e
+        try:
+            temperature = float(os.environ.get("WIRE_LLAMACPP_TEMPERATURE", "0.5"))
+        except ValueError as e:
+            raise ConfigError(f"WIRE_LLAMACPP_TEMPERATURE must be a float: {e}") from e
+        llamacpp_block = {
+            "base_url": _required("WIRE_LLAMACPP_BASE_URL"),
+            "model": _required("WIRE_LLAMACPP_MODEL"),
+            "timeout_seconds": timeout,
+            "temperature": temperature,
+        }
+
+    merged: dict[str, Any] = {
+        "provider": provider,
+        "claude": claude_models,
+        "llamacpp": llamacpp_block,
+    }
+    # Carry over the operational settings that remain in YAML. Validation
+    # (presence / type / range) is left to pydantic so the error messages stay
+    # consistent with the rest of the schema.
+    for key in ("prompt_caching", "monthly_budget_usd", "budget_alert_threshold"):
+        if key in yaml_llm:
+            merged[key] = yaml_llm[key]
+    return merged
+
+
 def load_config(path: Path) -> WireConfig:
     raw = _load_yaml_mapping(path)
+    yaml_llm = raw.get("llm", {}) or {}
+    if not isinstance(yaml_llm, dict):
+        raise ConfigError("llm: block in config.yaml must be a mapping")
+    raw["llm"] = _build_llm_dict_from_env(yaml_llm)
     try:
         return WireConfig.model_validate(raw)
     except ValidationError as e:

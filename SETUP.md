@@ -91,69 +91,52 @@ That's it. No further steps.
 
 ---
 
-## 5. (Optional) Self-hosted Ollama
+## 5. (Optional) Self-hosted llama.cpp / OpenAI-compatible endpoint
 
-Only do this if you want to shift the bulk of LLM volume off Anthropic. Wire's `FallbackProvider` keeps Anthropic as the automatic safety net — when Ollama times out, returns invalid JSON, or refuses to produce structured output, the call gets retried against Claude. So flipping to Ollama is reversible at any time and doesn't risk drafting reliability.
+Only do this if you want to shift the bulk of LLM volume off Anthropic. Wire's `FallbackProvider` keeps Anthropic as the automatic safety net — when the local backend times out, returns invalid JSON, or refuses to produce structured output, the call gets retried against Claude. So flipping to a local backend is reversible at any time and doesn't risk drafting reliability.
 
-### 5.1 — Run Ollama on a network-reachable host
+### 5.1 — Run an OpenAI-compatible server
 
-```bash
-# On the host (LAN box, VPN endpoint, or the same docker network as Wire):
-OLLAMA_HOST=0.0.0.0 ollama serve
+Wire's llama.cpp provider speaks the OpenAI `POST /v1/chat/completions` shape, so any of these work: `llama.cpp` (with its built-in server), `vLLM`, `Ollama`'s OpenAI-compat endpoint, OpenRouter, etc. The endpoint URL must include the `/v1` segment.
 
-# Pull a known-good model. Helmsman + Wire have both production-tested this:
-ollama pull qwen3.5:9b
+### 5.2 — Configure via env vars (in Coolify)
+
+```
+WIRE_LLM_PROVIDER=llamacpp
+WIRE_LLAMACPP_BASE_URL=https://<your endpoint>/v1
+WIRE_LLAMACPP_MODEL=qwen3-coder-next
+WIRE_LLAMACPP_TIMEOUT_SECONDS=90       # optional, default 90
+WIRE_LLAMACPP_TEMPERATURE=0.5          # optional, default 0.5
+LLM_API_KEY=<bearer token>             # leave blank for unauth'd local servers
 ```
 
-### 5.2 — Configure Wire
-
-In `/data/config.yaml`:
-
-```yaml
-llm:
-  provider: ollama
-  ollama:
-    base_url: http://<your ollama host>:11434
-    model: qwen3.5:9b
-    timeout_seconds: 90
-    temperature: 0.5     # tuned for qwen; raise for more variation, lower for tighter schemas
-    think: true          # extended thinking — required for qwen reliability
-    # extra_options:    # optional: pass any other Ollama option without code changes
-    #   top_p: 0.95
-    #   seed: 42
-```
-
-The `temperature` and `think` defaults match Helmsman's empirical tuning. Without them, qwen3.5:9b refuses to produce structured output ~40% of the time at default settings. With them, refusal rate drops to near zero.
-
-Anthropic stays configured even when `provider: ollama` — it's the automatic fallback. Don't remove `ANTHROPIC_API_KEY` from your env vars.
+The four `WIRE_CLAUDE_*_MODEL` vars must still be set — they're the fallback path. `ANTHROPIC_API_KEY` likewise stays configured.
 
 ### 5.3 — Verify
 
 After redeploy:
 
-1. **Boot logs**: look for `wire.ollama.reachable` (success) or `wire.ollama.unreachable_warning` (Ollama host down or wrong URL — Wire still starts, but every call falls back to Claude).
-2. **`/status` in Telegram**: the new 🧠 brain block shows primary, fallback, last-used backend, and 24h fallback rate. After the first poll cycle:
+1. **Boot logs**: look for `wire.llamacpp.reachable` (success) or `wire.llamacpp.unreachable_warning` (endpoint down or wrong URL — Wire still starts, but every call falls back to Claude).
+2. **`/status` in Telegram**: the 🧠 brain block shows primary, fallback, last-used backend, and 24h fallback rate. After the first poll cycle:
    ```
    🧠 brain
-   primary:  ollama (qwen3.5:9b)
+   primary:  llamacpp (qwen3-coder-next)
    fallback: claude (claude-sonnet-4-6 / claude-haiku-4-5)
-   last used: ollama
+   last used: llamacpp
    fallback rate (24h): 0% (0 / 12)
    ```
-   A high fallback rate (>20%) means Ollama is choking on something — see "Tuning" below.
+   A high fallback rate (>20%) means the local backend is choking — see "Tuning" below.
 
 ### 5.4 — Tuning
 
-If you switch to Ollama and the brain block shows >20% fallback rate after a few polls:
-
 | symptom | likely cause | fix |
 |---|---|---|
-| Fallback rate ~100% on every call | Ollama not reachable, or wrong base_url | Check `wire.ollama.unreachable_warning` boot log |
-| Fallback rate 30-60%, intermittent | Schema refusals from qwen | Lower `temperature` to 0.3 |
-| Fallback rate slowly climbing over hours | Memory pressure on Ollama host | `ollama stop` + pull a smaller quant (e.g. `qwen3.5:9b-q4_K_M`) |
-| All calls hit timeout | `timeout_seconds` too low for slow host | Raise to 120s or 180s |
+| Fallback rate ~100% on every call | Endpoint unreachable, wrong base_url, or bad bearer token | Check `wire.llamacpp.unreachable_warning` boot log; verify `LLM_API_KEY` |
+| Fallback rate 30-60%, intermittent | Schema refusals from the model | Lower `WIRE_LLAMACPP_TEMPERATURE` to `0.3` |
+| All calls hit timeout | `WIRE_LLAMACPP_TIMEOUT_SECONDS` too low | Raise to `120` or `180` |
+| `401`/`403` errors in logs | `LLM_API_KEY` missing or wrong | Auth failures don't auto-fallback — they surface as `LLMAuthError` |
 
-If nothing helps, set `provider: claude` while debugging. Cost goes up, but drafts arrive.
+If nothing helps, set `WIRE_LLM_PROVIDER=claude` while debugging. Cost goes up, but drafts arrive.
 
 ---
 
@@ -177,8 +160,9 @@ On the server, the `/data` volume needs three things plus secrets:
    - `github.org`
    - `github.app_id`, `github.installation_id`
    - `quiet_hours.timezone` (if not Europe/Stockholm)
-   - `llm.provider` (`claude` or `ollama`)
    - `llm.monthly_budget_usd` (cap; warn at 80%, pause at 100%)
+
+   LLM provider, Claude model strings, and the llama.cpp endpoint are set via env vars — see step 7's Coolify list and `.env.example`. Not in `config.yaml`.
 3. Edit `/data/repos.yaml` to list only repos you want posts about. **Anything not in this list is ignored entirely** — Wire never sees events from un-allowlisted repos. This is the safety mechanism that keeps work repos out of public posts.
 
 ---
@@ -189,14 +173,22 @@ On the server, the `/data` volume needs three things plus secrets:
 
 1. Point Coolify at this repo.
 2. Persistent volume → mount at `/data`.
-3. Env vars:
+3. Env vars (required):
    ```
    ANTHROPIC_API_KEY
    TELEGRAM_BOT_TOKEN
    TELEGRAM_CHAT_ID
    TWITTER_CLIENT_ID
    TWITTER_CLIENT_SECRET
+
+   # LLM model selection — see .env.example for full details
+   WIRE_LLM_PROVIDER                  # claude | llamacpp
+   WIRE_CLAUDE_DRAFTING_MODEL         # e.g. claude-sonnet-4-6
+   WIRE_CLAUDE_TRIAGE_MODEL           # e.g. claude-haiku-4-5
+   WIRE_CLAUDE_VOICE_PROFILE_MODEL    # e.g. claude-haiku-4-5
+   WIRE_CLAUDE_DIGEST_MODEL           # e.g. claude-haiku-4-5
    ```
+   When `WIRE_LLM_PROVIDER=llamacpp`, also set: `WIRE_LLAMACPP_BASE_URL`, `WIRE_LLAMACPP_MODEL`, optional `WIRE_LLAMACPP_TIMEOUT_SECONDS` / `WIRE_LLAMACPP_TEMPERATURE`, and `LLM_API_KEY` (bearer token; blank for unauth'd local servers).
 4. Healthcheck: HTTP `GET /health` on port 8080.
 5. Disable auto-deploy initially; trigger manually until you trust the setup.
 

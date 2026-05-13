@@ -12,10 +12,10 @@ from wire.config import (
     GithubConfig,
     IngestionConfig,
     LearningConfig,
+    LlamaCppConfig,
     LLMConfig,
     LoggingConfig,
     MetricsConfig,
-    OllamaConfig,
     QuietHoursConfig,
     ReposLocation,
     SessionConfig,
@@ -41,11 +41,13 @@ def _config(provider: str = "claude") -> WireConfig:
         repos=ReposLocation(config_path="/d/r.yaml"),
         llm=LLMConfig(
             provider=provider,
-            ollama=OllamaConfig(
-                base_url="http://ollama.test:11434",
-                model="qwen3.5:9b",
+            llamacpp=LlamaCppConfig(
+                base_url="https://llm.test/v1",
+                model="qwen3-coder-next",
                 timeout_seconds=90,
-            ),
+            )
+            if provider == "llamacpp"
+            else None,
             claude=ClaudeModelsConfig(
                 drafting="claude-sonnet-4-6",
                 triage="claude-haiku-4-5",
@@ -114,22 +116,22 @@ async def test_status_renders_claude_only_brain(db):
     assert "🧠 brain" in text
     assert "claude (drafting=claude-sonnet-4-6)" in text
     assert "claude only" in text
-    # fallback rate line only appears in ollama mode
+    # fallback rate line only appears in llamacpp mode
     assert "fallback rate" not in text
 
 
 @pytest.mark.asyncio
-async def test_status_renders_ollama_brain_with_fallback_stats(db):
-    """When provider=ollama, brain block shows primary + fallback + rate."""
-    cfg = _config(provider="ollama")
+async def test_status_renders_llamacpp_brain_with_fallback_stats(db):
+    """When provider=llamacpp, brain block shows primary + fallback + rate."""
+    cfg = _config(provider="llamacpp")
 
-    # Seed some LLM calls — 3 ollama, 1 fallback to claude
+    # Seed some LLM calls — 3 llamacpp, 1 fallback to claude
     with db.session_scope() as sa:
         for fb in (False, False, False, True):
             sa.add(
                 LLMCall(
                     task="drafting",
-                    provider="ollama" if not fb else "claude",
+                    provider="llamacpp" if not fb else "claude",
                     model=None if not fb else "claude-sonnet-4-6",
                     fallback=fb,
                     input_tokens=100,
@@ -139,7 +141,7 @@ async def test_status_renders_ollama_brain_with_fallback_stats(db):
                 )
             )
 
-    set_last_used_provider("ollama")
+    set_last_used_provider("llamacpp")
 
     update = _make_update()
     ctx = _make_context(cfg)
@@ -147,24 +149,24 @@ async def test_status_renders_ollama_brain_with_fallback_stats(db):
 
     text = _captured_text(update)
     assert "🧠 brain" in text
-    assert "ollama (qwen3.5:9b)" in text
+    assert "llamacpp (qwen3-coder-next)" in text
     assert "claude (claude-sonnet-4-6 / claude-haiku-4-5)" in text
-    assert "last used: ollama" in text
+    assert "last used: llamacpp" in text
     # 1 / 4 = 25%
     assert "25%" in text
     assert "1 / 4" in text
 
 
 @pytest.mark.asyncio
-async def test_status_ollama_brain_with_no_calls_yet(db):
-    """Fresh ollama deploy with no LLM calls: rate line says so."""
-    cfg = _config(provider="ollama")
+async def test_status_llamacpp_brain_with_no_calls_yet(db):
+    """Fresh llamacpp deploy with no LLM calls: rate line says so."""
+    cfg = _config(provider="llamacpp")
     update = _make_update()
     ctx = _make_context(cfg)
     await status_cmd(update, ctx)
 
     text = _captured_text(update)
-    assert "ollama (qwen3.5:9b)" in text
+    assert "llamacpp (qwen3-coder-next)" in text
     assert "no LLM calls yet" in text
 
 
