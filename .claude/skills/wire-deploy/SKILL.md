@@ -62,7 +62,8 @@ ssh johan@gary 'docker logs --tail 100 $(docker ps --filter name=j13i32n8rrvzsxp
 
 ## Redeploy
 
-1. Code: `git push origin main` (auto-deploy is OFF in Coolify; manual click required)
+1. Code: Johan merges the PR to `main`; agents never push to `main` and land merges with the global
+   `prod-landing` skill (auto-deploy is OFF in Coolify; manual click required)
 2. Coolify UI → Wire app → **Deploy**
 3. Watch logs (above) until `wire.ready` appears
 4. Verify in Telegram: send `/status` to the Wire bot

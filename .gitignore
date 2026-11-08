@@ -37,3 +37,8 @@ data/repos.yaml
 data/secrets/
 
 # Tracked: data/config.yaml.example, data/repos.yaml.example
+
+# Agent tooling (personal settings, handoff notes, agent worktrees)
+.claude/settings.local.json
+.agent/
+.claude/worktrees/

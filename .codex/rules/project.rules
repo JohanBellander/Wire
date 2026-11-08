@@ -1,0 +1,6 @@
+# Same allow-list as .claude/settings.json permissions.allow. Change both together.
+prefix_rule(pattern=["uv", "sync"], decision="allow", justification="Install dependencies")
+prefix_rule(pattern=["uv", "run", "pytest"], decision="allow", justification="Run tests")
+prefix_rule(pattern=["uv", "run", "ruff", "check"], decision="allow", justification="Lint")
+prefix_rule(pattern=["uv", "run", "ruff", "format"], decision="allow", justification="Format")
+prefix_rule(pattern=["node", ".agents/sync-skills.mjs"], decision="allow", justification="Sync skills")

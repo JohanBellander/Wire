@@ -1,15 +1,15 @@
 ---
-description: Run wire.scripts.inspect against production and summarize the output. Usage: /wire-inspect [hours]
-argument-hint: "[hours] (default 24)"
+name: wire-inspect
+description: Run wire.scripts.inspect against production and summarize what Wire has been doing (events, triage, sessions, drafts, LLM cost). Use when the user asks what Wire did lately, "inspect Wire", or "/wire-inspect [hours]".
 ---
 
 Run the Wire production inspection script and summarize what it shows.
 
-The user wants to see what Wire has been doing in the last `$ARGUMENTS` hours
-(default 24 if no argument given). Run:
+The user wants to see what Wire has been doing in the last `<hours>` hours
+(default 24 if the user gave no number). Run, with `<hours>` filled in:
 
 ```bash
-ssh johan@gary 'docker exec $(docker ps --filter name=j13i32n8rrvzsxpydl404f6v -q) python -m wire.scripts.inspect ${1:-24}'
+ssh johan@gary 'docker exec $(docker ps --filter name=j13i32n8rrvzsxpydl404f6v -q) python -m wire.scripts.inspect <hours>'
 ```
 
 If the script doesn't exist on the running container yet (older deploy that
